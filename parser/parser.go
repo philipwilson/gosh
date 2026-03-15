@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// reservedWords are words that terminate a list when they appear
+// in command position. They are only special to the parser, not
+// the lexer.
+var reservedWords = map[string]bool{
+	"then": true, "elif": true, "else": true, "fi": true,
+	"do": true, "done": true, // for future while/for
+}
+
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
 func Parse(tokens []lexer.Token) (*List, error) {
 	p := &parser{tokens: tokens}
@@ -32,9 +40,36 @@ func (p *parser) next() lexer.Token {
 	return tok
 }
 
+// isStopWord returns true if the current token is a reserved word
+// that should terminate list parsing.
+func (p *parser) isStopWord(stops ...string) bool {
+	tok := p.peek()
+	if tok.Type != lexer.TOKEN_WORD {
+		return false
+	}
+	for _, s := range stops {
+		if tok.Val == s {
+			return true
+		}
+	}
+	return false
+}
+
 // parseList parses: pipeline ((';' | '&&' | '||') pipeline)*
-func (p *parser) parseList() (*List, error) {
+// Stops at EOF or when a token matching one of the stop words
+// appears in command position.
+func (p *parser) parseList(stops ...string) (*List, error) {
 	list := &List{}
+
+	// A list may be empty if we immediately hit a stop word
+	// (e.g., "else" right after "then" with no commands — that's
+	// actually an error in bash, but we handle it for robustness).
+	if len(stops) > 0 && p.isStopWord(stops...) {
+		return list, nil
+	}
+	if p.peek().Type == lexer.TOKEN_EOF {
+		return list, nil
+	}
 
 	pipeline, err := p.parsePipeline()
 	if err != nil {
@@ -57,6 +92,11 @@ func (p *parser) parseList() (*List, error) {
 			list.Entries = append(list.Entries, ListEntry{Pipeline: pipeline})
 			return list, nil
 		default:
+			// Check if this is a stop word (e.g., "then", "fi").
+			if len(stops) > 0 && p.isStopWord(stops...) {
+				list.Entries = append(list.Entries, ListEntry{Pipeline: pipeline})
+				return list, nil
+			}
 			return nil, fmt.Errorf("unexpected token %s", tok)
 		}
 
@@ -64,8 +104,11 @@ func (p *parser) parseList() (*List, error) {
 
 		list.Entries = append(list.Entries, ListEntry{Pipeline: pipeline, Op: op})
 
-		// A trailing semicolon with nothing after it is valid: "echo hi ;"
+		// A trailing separator before a stop word or EOF is valid.
 		if p.peek().Type == lexer.TOKEN_EOF {
+			return list, nil
+		}
+		if len(stops) > 0 && p.isStopWord(stops...) {
 			return list, nil
 		}
 
@@ -98,11 +141,98 @@ func (p *parser) parsePipeline() (*Pipeline, error) {
 	return pipe, nil
 }
 
-// parseCommand parses: (assign)* (word | redirect)+
+// parseCommand dispatches to compound commands (if, while, for) or
+// falls through to parseSimpleCommand for regular commands.
+func (p *parser) parseCommand() (Command, error) {
+	tok := p.peek()
+	if tok.Type == lexer.TOKEN_WORD {
+		switch tok.Val {
+		case "if":
+			return p.parseIf()
+		}
+	}
+	return p.parseSimpleCommand()
+}
+
+// parseIf parses: 'if' list 'then' list ('elif' list 'then' list)* ('else' list)? 'fi'
+func (p *parser) parseIf() (*IfCmd, error) {
+	p.next() // consume "if"
+
+	cmd := &IfCmd{}
+
+	// Parse the first if clause.
+	cond, err := p.parseList("then")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("then") {
+		return nil, fmt.Errorf("expected 'then', got %s", p.peek())
+	}
+
+	body, err := p.parseList("elif", "else", "fi")
+	if err != nil {
+		return nil, err
+	}
+	cmd.Clauses = append(cmd.Clauses, IfClause{Condition: cond, Body: body})
+
+	// Parse zero or more elif clauses.
+	for p.peekWord("elif") {
+		p.next() // consume "elif"
+
+		cond, err = p.parseList("then")
+		if err != nil {
+			return nil, err
+		}
+		if !p.expectWord("then") {
+			return nil, fmt.Errorf("expected 'then' after 'elif', got %s", p.peek())
+		}
+
+		body, err = p.parseList("elif", "else", "fi")
+		if err != nil {
+			return nil, err
+		}
+		cmd.Clauses = append(cmd.Clauses, IfClause{Condition: cond, Body: body})
+	}
+
+	// Parse optional else.
+	if p.peekWord("else") {
+		p.next() // consume "else"
+
+		elseBody, err := p.parseList("fi")
+		if err != nil {
+			return nil, err
+		}
+		cmd.ElseBody = elseBody
+	}
+
+	if !p.expectWord("fi") {
+		return nil, fmt.Errorf("expected 'fi', got %s", p.peek())
+	}
+
+	return cmd, nil
+}
+
+// peekWord returns true if the next token is a WORD with the given value.
+func (p *parser) peekWord(word string) bool {
+	tok := p.peek()
+	return tok.Type == lexer.TOKEN_WORD && tok.Val == word
+}
+
+// expectWord consumes the next token if it's a WORD with the given value.
+// Returns true if consumed, false otherwise.
+func (p *parser) expectWord(word string) bool {
+	if p.peekWord(word) {
+		p.next()
+		return true
+	}
+	return false
+}
+
+// parseSimpleCommand parses: (assign)* (word | redirect)+
 //
 // Assignments (NAME=VALUE) are only recognized before the first
 // non-assignment word, following bash semantics.
-func (p *parser) parseCommand() (*SimpleCmd, error) {
+func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 	cmd := &SimpleCmd{}
 	seenArg := false // once true, no more assignments
 

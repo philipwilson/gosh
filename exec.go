@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"gosh/expander"
 	"gosh/parser"
 )
 
@@ -65,6 +66,12 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 	var pids []int
 
 	for i, cmd := range pipe.Cmds {
+		simple, ok := cmd.(*parser.SimpleCmd)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "gosh: compound commands not supported in background pipelines\n")
+			continue
+		}
+
 		var stdin *os.File
 		if i == 0 {
 			stdin = os.Stdin
@@ -80,7 +87,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 		}
 
 		fds := [3]*os.File{stdin, stdout, os.Stderr}
-		proc, opened := startProcess(state, cmd, fds, pgid)
+		proc, opened := startProcess(state, simple, fds, pgid)
 		// Close files opened by redirects immediately — the child has
 		// inherited them.
 		for _, f := range opened {
@@ -108,7 +115,9 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 
 	cmdParts := make([]string, n)
 	for i, cmd := range pipe.Cmds {
-		cmdParts[i] = strings.Join(cmd.ArgStrings(), " ")
+		if simple, ok := cmd.(*parser.SimpleCmd); ok {
+			cmdParts[i] = strings.Join(simple.ArgStrings(), " ")
+		}
 	}
 	cmdText := strings.Join(cmdParts, " | ")
 
@@ -121,7 +130,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	n := len(pipe.Cmds)
 
 	if n == 1 {
-		state.lastStatus = execSimple(state, pipe.Cmds[0], os.Stdin, os.Stdout)
+		state.lastStatus = execCommand(state, pipe.Cmds[0], os.Stdin, os.Stdout)
 		return
 	}
 
@@ -149,6 +158,12 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	pgid := 0
 
 	for i, cmd := range pipe.Cmds {
+		simple, ok := cmd.(*parser.SimpleCmd)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "gosh: compound commands not supported in pipelines\n")
+			continue
+		}
+
 		var stdin *os.File
 		if i == 0 {
 			stdin = os.Stdin
@@ -164,7 +179,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 		}
 
 		fds := [3]*os.File{stdin, stdout, os.Stderr}
-		proc, opened := startProcess(state, cmd, fds, pgid)
+		proc, opened := startProcess(state, simple, fds, pgid)
 		infos[i] = procInfo{proc: proc, files: opened}
 
 		if i == 0 && proc != nil {
@@ -212,7 +227,9 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	if anyStopped {
 		cmdParts := make([]string, n)
 		for i, cmd := range pipe.Cmds {
-			cmdParts[i] = strings.Join(cmd.ArgStrings(), " ")
+			if simple, ok := cmd.(*parser.SimpleCmd); ok {
+				cmdParts[i] = strings.Join(simple.ArgStrings(), " ")
+			}
 		}
 		cmdText := strings.Join(cmdParts, " | ")
 		j := state.addJob(pgid, pids, cmdText, jobStopped)
@@ -226,7 +243,7 @@ func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File
 	n := len(pipe.Cmds)
 
 	if n == 1 {
-		state.lastStatus = execSimple(state, pipe.Cmds[0], os.Stdin, stdout)
+		state.lastStatus = execCommand(state, pipe.Cmds[0], os.Stdin, stdout)
 		return
 	}
 
@@ -251,6 +268,12 @@ func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File
 	pgid := 0
 
 	for i, cmd := range pipe.Cmds {
+		simple, ok := cmd.(*parser.SimpleCmd)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "gosh: compound commands not supported in pipelines\n")
+			continue
+		}
+
 		var sin *os.File
 		if i == 0 {
 			sin = os.Stdin
@@ -266,7 +289,7 @@ func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File
 		}
 
 		fds := [3]*os.File{sin, sout, os.Stderr}
-		proc, opened := startProcess(state, cmd, fds, pgid)
+		proc, opened := startProcess(state, simple, fds, pgid)
 		infos[i] = procInfo{proc: proc, files: opened}
 
 		if i == 0 && proc != nil {
@@ -292,6 +315,44 @@ func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File
 			state.lastStatus = res.status
 		}
 	}
+}
+
+// execCommand dispatches a Command (simple or compound) for execution.
+func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) int {
+	switch c := cmd.(type) {
+	case *parser.SimpleCmd:
+		return execSimple(state, c, stdin, stdout)
+	case *parser.IfCmd:
+		return execIf(state, c)
+	default:
+		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
+		return 1
+	}
+}
+
+// execIf evaluates an if/elif/else/fi command. Each condition and
+// body is expanded lazily — only the taken branch is expanded.
+func execIf(state *shellState, cmd *parser.IfCmd) int {
+	for _, clause := range cmd.Clauses {
+		expander.Expand(clause.Condition, state.lookup, state.cmdSubst)
+		execList(state, clause.Condition)
+
+		if state.lastStatus == 0 {
+			expander.Expand(clause.Body, state.lookup, state.cmdSubst)
+			execList(state, clause.Body)
+			return state.lastStatus
+		}
+	}
+
+	if cmd.ElseBody != nil {
+		expander.Expand(cmd.ElseBody, state.lookup, state.cmdSubst)
+		execList(state, cmd.ElseBody)
+		return state.lastStatus
+	}
+
+	// No branch taken — exit status is 0 (bash behavior).
+	state.lastStatus = 0
+	return 0
 }
 
 // execSimple runs a single command (not in a pipeline).

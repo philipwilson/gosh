@@ -53,7 +53,15 @@ func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc) {
 
 func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
 	for _, cmd := range pipe.Cmds {
-		expandCommand(cmd, lookup, subst)
+		switch c := cmd.(type) {
+		case *parser.SimpleCmd:
+			expandCommand(c, lookup, subst)
+		case *parser.IfCmd:
+			// IfCmd branches are expanded lazily by the executor,
+			// so each branch is only expanded if it's actually taken.
+		default:
+			_ = c
+		}
 	}
 }
 

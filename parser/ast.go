@@ -26,6 +26,13 @@ type Node interface {
 	String() string
 }
 
+// Command is the interface for nodes that can appear in a pipeline.
+// SimpleCmd and compound commands (IfCmd, etc.) implement this.
+type Command interface {
+	Node
+	command() // marker method
+}
+
 // --- Redirect ---
 
 // RedirType identifies the kind of redirection.
@@ -88,7 +95,8 @@ type SimpleCmd struct {
 	Redirects []Redirect
 }
 
-func (c *SimpleCmd) node() {}
+func (c *SimpleCmd) node()    {}
+func (c *SimpleCmd) command() {}
 func (c *SimpleCmd) String() string {
 	var parts []string
 	for _, a := range c.Assigns {
@@ -117,7 +125,7 @@ func (c *SimpleCmd) ArgStrings() []string {
 
 // Pipeline is one or more commands connected by pipes.
 type Pipeline struct {
-	Cmds []*SimpleCmd
+	Cmds []Command
 }
 
 func (p *Pipeline) node() {}
@@ -157,6 +165,39 @@ func (l *List) String() string {
 		if e.Op != "" {
 			s += " " + e.Op
 		}
+	}
+	return s + "]"
+}
+
+// --- IfCmd ---
+
+// IfClause is one condition+body pair (the "if" or an "elif").
+type IfClause struct {
+	Condition *List // commands between if/elif and then
+	Body      *List // commands between then and the next elif/else/fi
+}
+
+// IfCmd represents: if list; then list; [elif list; then list;]... [else list;] fi
+type IfCmd struct {
+	Clauses  []IfClause // if + zero or more elif
+	ElseBody *List      // nil if no else branch
+}
+
+func (c *IfCmd) node()    {}
+func (c *IfCmd) command() {}
+func (c *IfCmd) String() string {
+	s := "If["
+	for i, cl := range c.Clauses {
+		if i > 0 {
+			s += " Elif["
+		}
+		s += "cond=" + cl.Condition.String() + " body=" + cl.Body.String()
+		if i > 0 {
+			s += "]"
+		}
+	}
+	if c.ElseBody != nil {
+		s += " Else[" + c.ElseBody.String() + "]"
 	}
 	return s + "]"
 }

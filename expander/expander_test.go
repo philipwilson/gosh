@@ -97,7 +97,7 @@ func TestExpandBareDollar(t *testing.T) {
 func TestExpandAssignmentValue(t *testing.T) {
 	list := mustParse(t, `DIR=$HOME/bin`)
 	Expand(list, testLookup, nil)
-	cmd := list.Entries[0].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if len(cmd.Assigns) != 1 {
 		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
 	}
@@ -109,7 +109,7 @@ func TestExpandAssignmentValue(t *testing.T) {
 func TestExpandRedirectFilename(t *testing.T) {
 	list := mustParse(t, `echo hi > $HOME/out.txt`)
 	Expand(list, testLookup, nil)
-	cmd := list.Entries[0].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if cmd.Redirects[0].File.String() != "/home/user/out.txt" {
 		t.Errorf("expected /home/user/out.txt, got %q", cmd.Redirects[0].File)
 	}
@@ -157,7 +157,7 @@ func TestTildeMidWord(t *testing.T) {
 func TestTildeInAssignment(t *testing.T) {
 	list := mustParse(t, "DIR=~/bin")
 	Expand(list, testLookup, nil)
-	cmd := list.Entries[0].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if cmd.Assigns[0].Value.String() != "/home/user/bin" {
 		t.Errorf("expected /home/user/bin, got %q", cmd.Assigns[0].Value)
 	}
@@ -182,7 +182,7 @@ func TestGlobStar(t *testing.T) {
 	list := mustParse(t, "echo "+dir+"/*.go")
 	Expand(list, testLookup, nil)
 
-	cmd := list.Entries[0].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	// Should expand to bar.go and foo.go (sorted)
 	args := cmd.ArgStrings()
 	if len(args) != 3 {
@@ -201,7 +201,7 @@ func TestGlobQuestion(t *testing.T) {
 	list := mustParse(t, "echo "+dir+"/ba?.go")
 	Expand(list, testLookup, nil)
 
-	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
 		t.Fatalf("expected 2 args (echo + bar.go), got %d: %v", len(args), args)
 	}
@@ -217,7 +217,7 @@ func TestGlobNoMatch(t *testing.T) {
 	Expand(list, testLookup, nil)
 
 	// No .rs files exist — glob should keep the pattern as-is.
-	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
 		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
 	}
@@ -232,7 +232,7 @@ func TestGlobQuotedStar(t *testing.T) {
 	list := mustParse(t, `echo "`+dir+`/*.go"`)
 	Expand(list, testLookup, nil)
 
-	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
 		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
 	}
@@ -246,7 +246,7 @@ func TestGlobSingleQuotedStar(t *testing.T) {
 	list := mustParse(t, "echo '"+dir+"/*.go'")
 	Expand(list, testLookup, nil)
 
-	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
 		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
 	}
@@ -260,7 +260,7 @@ func TestGlobAllFiles(t *testing.T) {
 	list := mustParse(t, "echo "+dir+"/*")
 	Expand(list, testLookup, nil)
 
-	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	// echo + 4 files
 	if len(args) != 5 {
 		t.Fatalf("expected 5 args (echo + 4 files), got %d: %v", len(args), args)
@@ -310,7 +310,7 @@ func TestCmdSubstMixedWithText(t *testing.T) {
 func TestCmdSubstInAssignment(t *testing.T) {
 	list := mustParse(t, "USER=$(whoami)")
 	Expand(list, testLookup, mockSubst)
-	cmd := list.Entries[0].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if len(cmd.Assigns) != 1 {
 		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
 	}
@@ -325,7 +325,7 @@ func TestCmdSubstNilSubstFunc(t *testing.T) {
 	list := mustParse(t, "echo $(whoami)")
 	Expand(list, testLookup, nil)
 	// The CmdSubst part should remain with its text "whoami".
-	cmd := list.Entries[0].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	args := cmd.ArgStrings()
 	if len(args) != 2 {
 		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
@@ -350,9 +350,18 @@ func mustParse(t *testing.T, input string) *parser.List {
 	return list
 }
 
+func simpleCmd(t *testing.T, cmd parser.Command) *parser.SimpleCmd {
+	t.Helper()
+	sc, ok := cmd.(*parser.SimpleCmd)
+	if !ok {
+		t.Fatalf("expected *SimpleCmd, got %T", cmd)
+	}
+	return sc
+}
+
 func expectArgs(t *testing.T, list *parser.List, entryIdx int, want ...string) {
 	t.Helper()
-	cmd := list.Entries[entryIdx].Pipeline.Cmds[0]
+	cmd := simpleCmd(t, list.Entries[entryIdx].Pipeline.Cmds[0])
 	got := cmd.ArgStrings()
 	if len(got) != len(want) {
 		t.Fatalf("expected args %v, got %v", want, got)

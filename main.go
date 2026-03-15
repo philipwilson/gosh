@@ -26,8 +26,9 @@ type shellState struct {
 	shellPgid   int               // the shell's own process group ID
 	termFd      int               // file descriptor of the controlling terminal
 	exitFlag    bool              // set by exit builtin to stop the REPL
-	debugTokens bool              // print tokens before parsing
-	debugAST    bool              // print AST before expansion
+	debugTokens   bool              // print tokens before parsing
+	debugAST      bool              // print AST before expansion
+	debugExpanded bool              // print AST after expansion
 }
 
 func newShellState() *shellState {
@@ -106,8 +107,9 @@ var builtins = map[string]builtinFunc{
 	"unset":  builtinUnset,
 	"true":         builtinTrue,
 	"false":        builtinFalse,
-	"debug-tokens": builtinDebugTokens,
-	"debug-ast":    builtinDebugAST,
+	"debug-tokens":   builtinDebugTokens,
+	"debug-ast":      builtinDebugAST,
+	"debug-expanded": builtinDebugExpanded,
 }
 
 // builtinCd changes the shell's working directory.
@@ -240,6 +242,17 @@ func builtinDebugAST(state *shellState, args []string, stdout *os.File) int {
 	return 0
 }
 
+// builtinDebugExpanded toggles printing of the AST after expansion.
+func builtinDebugExpanded(state *shellState, args []string, stdout *os.File) int {
+	state.debugExpanded = !state.debugExpanded
+	if state.debugExpanded {
+		fmt.Fprintln(stdout, "expanded AST debugging on")
+	} else {
+		fmt.Fprintln(stdout, "expanded AST debugging off")
+	}
+	return 0
+}
+
 // --- Main loop ---
 
 func main() {
@@ -282,6 +295,11 @@ func main() {
 		}
 
 		expander.Expand(list, state.lookup)
+
+		if state.debugExpanded {
+			fmt.Fprintf(os.Stderr, "  %s\n", list)
+		}
+
 		execList(state, list)
 
 		if state.exitFlag {

@@ -32,6 +32,8 @@ var builtins = map[string]builtinFunc{
 	"bg":              builtinBg,
 	"break":           builtinBreak,
 	"continue":        builtinContinue,
+	"test":            builtinTest,
+	"[":               builtinBracket,
 	"debug-tokens":    builtinDebugTokens,
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
@@ -230,6 +232,22 @@ func builtinHistory(state *shellState, args []string, stdout *os.File) int {
 func builtinVersion(state *shellState, args []string, stdout *os.File) int {
 	fmt.Fprintf(stdout, "gosh %s\n", version)
 	return 0
+}
+
+func init() {
+	// Registered in init to break the initialization cycle:
+	// builtins → builtinSource → runScript → runLine → ... → builtins.
+	builtins["source"] = builtinSource
+	builtins["."] = builtinSource
+}
+
+// builtinSource reads and executes a file in the current shell.
+func builtinSource(state *shellState, args []string, stdout *os.File) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "gosh: source: filename argument required")
+		return 1
+	}
+	return runScript(state, args[0])
 }
 
 // parseJobSpec parses a job specifier like "%1" and returns the job ID.

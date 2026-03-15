@@ -168,6 +168,11 @@ func main() {
 
 	state := newShellState()
 
+	// If a script file is given as an argument, run it.
+	if len(os.Args) >= 2 {
+		os.Exit(runScript(state, os.Args[1]))
+	}
+
 	if state.interactive {
 		histPath := filepath.Join(state.vars["HOME"], ".gosh_history")
 		ed, err := editor.New(state.termFd, histPath)
@@ -188,6 +193,47 @@ func main() {
 	}
 
 	os.Exit(state.lastStatus)
+}
+
+// runScript executes a script file and returns the exit status.
+func runScript(state *shellState, path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		return 127
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for {
+		if !scanner.Scan() {
+			break
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		// Collect continuation lines for incomplete input.
+		for needsMore(line) {
+			if !scanner.Scan() {
+				break
+			}
+			more := scanner.Text()
+			if strings.HasSuffix(line, "\\") {
+				line = line[:len(line)-1] + more
+			} else {
+				line = line + "\n" + more
+			}
+		}
+
+		if runLine(state, line) {
+			break
+		}
+	}
+
+	return state.lastStatus
 }
 
 func runInteractive(state *shellState) {

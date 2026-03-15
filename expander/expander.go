@@ -27,8 +27,10 @@
 package expander
 
 import (
+	"fmt"
 	"gosh/lexer"
 	"gosh/parser"
+	"os"
 	"os/user"
 	"path/filepath"
 	"sort"
@@ -570,8 +572,11 @@ func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
 				literal.WriteString(string(runes[start:]))
 				consumed = false
 			} else {
-				varName = string(runes[start:i])
+				content := string(runes[start:i])
 				i++ // skip }
+				flushLiteral()
+				parts = append(parts, lexer.WordPart{Text: expandParam(content, lookup), Quote: lexer.Expanded})
+				consumed = false // already handled
 			}
 		case runes[i] == '?':
 			varName = "?"
@@ -607,6 +612,213 @@ func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
 
 	flushLiteral()
 	return parts
+}
+
+// --- Parameter expansion ---
+
+// expandParam handles ${...} parameter expansion. It supports:
+//
+//	${var}           simple lookup
+//	${#var}          string length
+//	${var:-word}     default value (if unset or empty)
+//	${var-word}      default value (if unset)
+//	${var:+word}     alternative value (if set and non-empty)
+//	${var+word}      alternative value (if set)
+//	${var:=word}     assign default (if unset or empty) — limited: no SetFunc
+//	${var=word}      assign default (if unset) — limited: no SetFunc
+//	${var:?word}     error if unset or empty
+//	${var?word}      error if unset
+//	${var#pattern}   remove shortest prefix match
+//	${var##pattern}  remove longest prefix match
+//	${var%pattern}   remove shortest suffix match
+//	${var%%pattern}  remove longest suffix match
+func expandParam(content string, lookup LookupFunc) string {
+	// ${#var} — string length (only when # is followed by a valid name
+	// and nothing else, not an operator like ##).
+	if len(content) > 1 && content[0] == '#' {
+		rest := content[1:]
+		if isValidVarName(rest) {
+			return strconv.Itoa(len([]rune(lookup(rest))))
+		}
+	}
+
+	name, op, word := parseParamOp(content)
+	if op == "" {
+		return lookup(name)
+	}
+
+	value := lookup(name)
+	// Expand variables in the word part.
+	word = expandDollar(word, lookup)
+
+	switch op {
+	case ":-", "-":
+		// Use default if empty/unset.
+		if value == "" {
+			return word
+		}
+		return value
+	case ":+", "+":
+		// Use alternative if set and non-empty.
+		if value != "" {
+			return word
+		}
+		return ""
+	case ":=", "=":
+		// Assign default — we can't modify variables from the expander,
+		// so behave like :- (return default without assigning).
+		if value == "" {
+			return word
+		}
+		return value
+	case ":?", "?":
+		// Error if unset/empty.
+		if value == "" {
+			msg := word
+			if msg == "" {
+				msg = "parameter null or not set"
+			}
+			fmt.Fprintf(os.Stderr, "gosh: %s: %s\n", name, msg)
+			return ""
+		}
+		return value
+	case "#":
+		return removePrefix(value, word, false)
+	case "##":
+		return removePrefix(value, word, true)
+	case "%":
+		return removeSuffix(value, word, false)
+	case "%%":
+		return removeSuffix(value, word, true)
+	}
+
+	return value
+}
+
+// parseParamOp extracts the variable name, operator, and word from
+// the content between ${ and }. Returns (name, op, word) where op
+// is "" for a simple ${var} lookup.
+func parseParamOp(content string) (name, op, word string) {
+	runes := []rune(content)
+	i := 0
+
+	// Special single-character variable names.
+	if len(runes) > 0 {
+		switch runes[0] {
+		case '?', '$', '@', '*':
+			i = 1
+		default:
+			if runes[0] >= '0' && runes[0] <= '9' {
+				i = 1
+			} else if isNameStart(runes[0]) {
+				for i < len(runes) && isNameCont(runes[i]) {
+					i++
+				}
+			} else {
+				return content, "", ""
+			}
+		}
+	}
+
+	name = string(runes[:i])
+	rest := string(runes[i:])
+
+	// Check for two-character operators first, then single-character.
+	for _, candidate := range []string{"%%", "##", ":-", ":+", ":=", ":?"} {
+		if strings.HasPrefix(rest, candidate) {
+			return name, candidate, rest[len(candidate):]
+		}
+	}
+	for _, candidate := range []string{"%", "#", "-", "+", "=", "?"} {
+		if strings.HasPrefix(rest, candidate) {
+			return name, candidate, rest[len(candidate):]
+		}
+	}
+
+	// No operator — could be a simple name or unrecognized content.
+	if rest == "" {
+		return name, "", ""
+	}
+	return content, "", ""
+}
+
+// isValidVarName returns true if s is a valid variable name
+// (used to distinguish ${#var} from ${#} with an operator).
+func isValidVarName(s string) bool {
+	if s == "" {
+		return false
+	}
+	runes := []rune(s)
+	if len(runes) == 1 {
+		switch runes[0] {
+		case '?', '$', '#', '@', '*':
+			return true
+		}
+		if runes[0] >= '0' && runes[0] <= '9' {
+			return true
+		}
+	}
+	if !isNameStart(runes[0]) {
+		return false
+	}
+	for _, r := range runes[1:] {
+		if !isNameCont(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// removePrefix removes the shortest (or longest) prefix matching
+// the glob pattern from value.
+func removePrefix(value, pattern string, longest bool) string {
+	runes := []rune(value)
+	if longest {
+		for i := len(runes); i >= 0; i-- {
+			if patternMatch(pattern, string(runes[:i])) {
+				return string(runes[i:])
+			}
+		}
+	} else {
+		for i := 0; i <= len(runes); i++ {
+			if patternMatch(pattern, string(runes[:i])) {
+				return string(runes[i:])
+			}
+		}
+	}
+	return value
+}
+
+// removeSuffix removes the shortest (or longest) suffix matching
+// the glob pattern from value.
+func removeSuffix(value, pattern string, longest bool) string {
+	runes := []rune(value)
+	if longest {
+		for i := 0; i <= len(runes); i++ {
+			if patternMatch(pattern, string(runes[i:])) {
+				return string(runes[:i])
+			}
+		}
+	} else {
+		for i := len(runes); i >= 0; i-- {
+			if patternMatch(pattern, string(runes[i:])) {
+				return string(runes[:i])
+			}
+		}
+	}
+	return value
+}
+
+// patternMatch is like filepath.Match but allows * to match /
+// (which filepath.Match treats as a path separator). Parameter
+// expansion patterns are string patterns, not path patterns.
+func patternMatch(pattern, s string) bool {
+	// Replace / with a placeholder that * will match.
+	const ph = "\x00"
+	p := strings.ReplaceAll(pattern, "/", ph)
+	s = strings.ReplaceAll(s, "/", ph)
+	matched, _ := filepath.Match(p, s)
+	return matched
 }
 
 // expandDollar scans text for $VAR, ${VAR}, $?, $$ and replaces
@@ -647,9 +859,9 @@ func expandDollar(text string, lookup LookupFunc) string {
 				result.WriteString(string(runes[start:]))
 				break
 			}
-			name := string(runes[start:i])
+			content := string(runes[start:i])
 			i++ // skip }
-			result.WriteString(lookup(name))
+			result.WriteString(expandParam(content, lookup))
 
 		case runes[i] == '?':
 			result.WriteString(lookup("?"))

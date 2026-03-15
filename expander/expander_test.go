@@ -502,6 +502,150 @@ func TestWordSplitForLoop(t *testing.T) {
 	expectArgs(t, list, 0, "echo", "a", "b", "c", "done")
 }
 
+// --- Parameter expansion tests ---
+
+func TestParamDefault(t *testing.T) {
+	// ${var:-default} returns default when var is empty
+	list := mustParse(t, `echo ${X:-fallback}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "fallback")
+}
+
+func TestParamDefaultSet(t *testing.T) {
+	// ${var:-default} returns var when set
+	list := mustParse(t, `echo ${USER:-nobody}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "alice")
+}
+
+func TestParamDefaultWithExpansion(t *testing.T) {
+	// ${var:-$OTHER} expands the default word
+	list := mustParse(t, `echo ${X:-$HOME}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "/home/user")
+}
+
+func TestParamAlternative(t *testing.T) {
+	// ${var:+alt} returns alt when var is set and non-empty
+	list := mustParse(t, `echo ${USER:+yes}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "yes")
+}
+
+func TestParamAlternativeEmpty(t *testing.T) {
+	// ${var:+alt} returns empty when var is unset
+	list := mustParse(t, `echo ${X:+yes}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo")
+}
+
+func TestParamLength(t *testing.T) {
+	// ${#var} returns string length
+	list := mustParse(t, `echo ${#USER}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "5") // "alice" = 5
+}
+
+func TestParamLengthEmpty(t *testing.T) {
+	// ${#var} for unset var returns 0
+	list := mustParse(t, `echo ${#UNDEFINED}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "0")
+}
+
+func TestParamLengthSpecial(t *testing.T) {
+	// ${#?} = length of $?
+	list := mustParse(t, `echo ${#?}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "1") // "0" = 1 char
+}
+
+func TestParamStripSuffix(t *testing.T) {
+	// ${var%pattern} removes shortest suffix
+	lookup := func(name string) string {
+		if name == "FILE" {
+			return "hello.tar.gz"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${FILE%.*}`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "hello.tar")
+}
+
+func TestParamStripSuffixLong(t *testing.T) {
+	// ${var%%pattern} removes longest suffix
+	lookup := func(name string) string {
+		if name == "FILE" {
+			return "hello.tar.gz"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${FILE%%.*}`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "hello")
+}
+
+func TestParamStripPrefix(t *testing.T) {
+	// ${var#pattern} removes shortest prefix
+	lookup := func(name string) string {
+		if name == "PATH" {
+			return "/usr/local/bin"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${PATH#*/}`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "usr/local/bin")
+}
+
+func TestParamStripPrefixLong(t *testing.T) {
+	// ${var##pattern} removes longest prefix
+	lookup := func(name string) string {
+		if name == "PATH" {
+			return "/usr/local/bin"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${PATH##*/}`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "bin")
+}
+
+func TestParamNoMatch(t *testing.T) {
+	// Pattern that doesn't match — value unchanged
+	lookup := func(name string) string {
+		if name == "X" {
+			return "hello"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${X%*.go}`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "hello")
+}
+
+func TestParamErrorMsg(t *testing.T) {
+	// ${var:?msg} with unset var returns empty (error goes to stderr)
+	list := mustParse(t, `echo ${X:?missing}`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo")
+}
+
+func TestParamInDoubleQuotes(t *testing.T) {
+	// Parameter expansion works inside double quotes
+	list := mustParse(t, `echo "${USER:-nobody}"`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "alice")
+}
+
+func TestParamDefaultInDoubleQuotes(t *testing.T) {
+	// ${var:-default} in double quotes, var unset
+	list := mustParse(t, `echo "${X:-fallback}"`)
+	Expand(list, testLookup, nil)
+	expectArgs(t, list, 0, "echo", "fallback")
+}
+
 func simpleCmd(t *testing.T, cmd parser.Command) *parser.SimpleCmd {
 	t.Helper()
 	sc, ok := cmd.(*parser.SimpleCmd)

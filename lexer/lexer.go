@@ -89,6 +89,7 @@ const (
 	TOKEN_AMP                    // & (background)
 	TOKEN_DSEMI                  // ;; (case clause terminator)
 	TOKEN_HEREDOC                // << or <<- (here document)
+	TOKEN_HERESTRING             // <<< (here string)
 	TOKEN_LPAREN                 // ( (function definition)
 	TOKEN_RPAREN                 // ) (case pattern terminator)
 	TOKEN_EOF                    // end of input
@@ -120,6 +121,8 @@ func (t TokenType) String() string {
 		return "DSEMI"
 	case TOKEN_HEREDOC:
 		return "HEREDOC"
+	case TOKEN_HERESTRING:
+		return "HERESTRING"
 	case TOKEN_LPAREN:
 		return "LPAREN"
 	case TOKEN_RPAREN:
@@ -160,6 +163,8 @@ func (t Token) String() string {
 			op = "<<-"
 		}
 		return fmt.Sprintf("%s%s", op, t.Val)
+	case TOKEN_HERESTRING:
+		return "<<<" + t.Val
 	case TOKEN_GT, TOKEN_APPEND, TOKEN_LT:
 		if t.Fd >= 0 {
 			return fmt.Sprintf("%s(fd=%d)", t.Type, t.Fd)
@@ -299,6 +304,14 @@ func (l *lexer) lex() ([]Token, error) {
 			l.next()
 			if c, ok := l.peek(); ok && c == '<' {
 				l.next() // consume second <
+				// Check for <<< (here string) vs << (heredoc)
+				if d, ok := l.peek(); ok && d == '<' {
+					l.next() // consume third <
+					tok := Token{Type: TOKEN_HERESTRING, Fd: -1}
+					tokens = absorbFd(tokens, &tok)
+					tokens = append(tokens, tok)
+					continue
+				}
 				tok := Token{Type: TOKEN_HEREDOC, Fd: -1}
 				tokens = absorbFd(tokens, &tok)
 				// Check for <<- (strip tabs)

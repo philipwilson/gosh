@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strconv"
@@ -9,8 +10,8 @@ import (
 )
 
 // builtinFunc is the signature for all builtin commands.
-// stdout is the file to write output to (may be redirected).
-type builtinFunc func(state *shellState, args []string, stdout *os.File) int
+// stdin and stdout are the files for I/O (may be redirected).
+type builtinFunc func(state *shellState, args []string, stdin, stdout *os.File) int
 
 // builtins maps command names to their builtin implementations.
 // These run in the shell process (not forked), which is required
@@ -35,6 +36,8 @@ var builtins = map[string]builtinFunc{
 	"return":          builtinReturn,
 	"test":            builtinTest,
 	"[":               builtinBracket,
+	"read":            builtinRead,
+	"local":           builtinLocal,
 	"debug-tokens":    builtinDebugTokens,
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
@@ -43,7 +46,7 @@ var builtins = map[string]builtinFunc{
 
 // builtinCd changes the shell's working directory.
 // With no arguments, changes to $HOME.
-func builtinCd(state *shellState, args []string, stdout *os.File) int {
+func builtinCd(state *shellState, args []string, stdin, stdout *os.File) int {
 	var dir string
 	switch len(args) {
 	case 0:
@@ -88,7 +91,7 @@ func builtinCd(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinPwd prints the current working directory.
-func builtinPwd(state *shellState, args []string, stdout *os.File) int {
+func builtinPwd(state *shellState, args []string, stdin, stdout *os.File) int {
 	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: pwd: %v\n", err)
@@ -100,7 +103,7 @@ func builtinPwd(state *shellState, args []string, stdout *os.File) int {
 
 // builtinEcho prints its arguments separated by spaces.
 // Supports -n to suppress the trailing newline.
-func builtinEcho(state *shellState, args []string, stdout *os.File) int {
+func builtinEcho(state *shellState, args []string, stdin, stdout *os.File) int {
 	suppressNewline := false
 	start := 0
 	if len(args) > 0 && args[0] == "-n" {
@@ -116,7 +119,7 @@ func builtinEcho(state *shellState, args []string, stdout *os.File) int {
 
 // builtinExit sets the exit flag to stop the REPL.
 // Optional argument is the exit status (default 0).
-func builtinExit(state *shellState, args []string, stdout *os.File) int {
+func builtinExit(state *shellState, args []string, stdin, stdout *os.File) int {
 	status := 0
 	if len(args) > 0 {
 		n, err := strconv.Atoi(args[0])
@@ -133,7 +136,7 @@ func builtinExit(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinBreak exits the innermost for/while loop.
-func builtinBreak(state *shellState, args []string, stdout *os.File) int {
+func builtinBreak(state *shellState, args []string, stdin, stdout *os.File) int {
 	if state.loopDepth == 0 {
 		fmt.Fprintln(os.Stderr, "gosh: break: only meaningful in a loop")
 		return 1
@@ -143,7 +146,7 @@ func builtinBreak(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinContinue skips to the next iteration of the innermost for/while loop.
-func builtinContinue(state *shellState, args []string, stdout *os.File) int {
+func builtinContinue(state *shellState, args []string, stdin, stdout *os.File) int {
 	if state.loopDepth == 0 {
 		fmt.Fprintln(os.Stderr, "gosh: continue: only meaningful in a loop")
 		return 1
@@ -153,7 +156,7 @@ func builtinContinue(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinReturn exits the current function with an optional status.
-func builtinReturn(state *shellState, args []string, stdout *os.File) int {
+func builtinReturn(state *shellState, args []string, stdin, stdout *os.File) int {
 	status := state.lastStatus
 	if len(args) > 0 {
 		n, err := strconv.Atoi(args[0])
@@ -168,9 +171,44 @@ func builtinReturn(state *shellState, args []string, stdout *os.File) int {
 	return status
 }
 
+// builtinLocal declares function-scoped variables.
+//
+//	local var1 [var2=value ...]
+//
+// Each variable is saved in the current function's local scope and
+// will be restored when the function returns. Can only be used
+// inside a function. Supports "local var" (sets to empty) and
+// "local var=value" (sets to value).
+func builtinLocal(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(state.localScopes) == 0 {
+		fmt.Fprintln(os.Stderr, "gosh: local: can only be used in a function")
+		return 1
+	}
+
+	scope := state.localScopes[len(state.localScopes)-1]
+
+	for _, arg := range args {
+		name, value, hasValue := strings.Cut(arg, "=")
+		// Only save the first time a variable is declared local in
+		// this scope — subsequent "local x=newval" should not
+		// overwrite the saved original.
+		if _, already := scope[name]; !already {
+			old, exists := state.vars[name]
+			scope[name] = savedVar{value: old, exists: exists}
+		}
+		if hasValue {
+			state.setVar(name, value)
+		} else {
+			state.setVar(name, "")
+		}
+	}
+
+	return 0
+}
+
 // builtinExport marks variables for export to child processes.
 // Supports "export VAR" and "export VAR=VALUE".
-func builtinExport(state *shellState, args []string, stdout *os.File) int {
+func builtinExport(state *shellState, args []string, stdin, stdout *os.File) int {
 	if len(args) == 0 {
 		for k := range state.exported {
 			fmt.Fprintf(stdout, "export %s=%q\n", k, state.vars[k])
@@ -189,18 +227,161 @@ func builtinExport(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinUnset removes variables from the shell.
-func builtinUnset(state *shellState, args []string, stdout *os.File) int {
+func builtinUnset(state *shellState, args []string, stdin, stdout *os.File) int {
 	for _, name := range args {
 		state.unsetVar(name)
 	}
 	return 0
 }
 
-func builtinTrue(state *shellState, args []string, stdout *os.File) int  { return 0 }
-func builtinFalse(state *shellState, args []string, stdout *os.File) int { return 1 }
+// builtinRead reads a line from stdin and splits it into variables.
+//
+//	read [-r] [var1 var2 ...]
+//
+// Reads one line from stdin. The line is split by IFS into fields
+// which are assigned to the named variables. The last variable gets
+// the remaining unsplit text. With no variables, the line is stored
+// in REPLY. Returns 1 on EOF, 0 otherwise.
+//
+// -r: raw mode — backslash does not act as an escape character.
+func builtinRead(state *shellState, args []string, stdin, stdout *os.File) int {
+	raw := false
+	varNames := args
+
+	// Parse -r flag.
+	if len(varNames) > 0 && varNames[0] == "-r" {
+		raw = true
+		varNames = varNames[1:]
+	}
+
+	// Read one line from stdin.
+	reader := bufio.NewReader(stdin)
+	var line string
+	for {
+		segment, err := reader.ReadString('\n')
+		if !raw && strings.HasSuffix(strings.TrimRight(segment, "\n"), "\\") {
+			// Line continuation: strip trailing backslash-newline.
+			segment = strings.TrimRight(segment, "\n")
+			segment = segment[:len(segment)-1]
+			line += segment
+			continue
+		}
+		line += segment
+		if err != nil {
+			// EOF — process whatever we got.
+			if line == "" {
+				return 1
+			}
+			break
+		}
+		break
+	}
+
+	// Strip trailing newline.
+	line = strings.TrimRight(line, "\n")
+
+	// No variable names: store in REPLY.
+	if len(varNames) == 0 {
+		state.setVar("REPLY", line)
+		return 0
+	}
+
+	// Split by IFS.
+	ifs := state.vars["IFS"]
+	if ifs == "" {
+		ifs = " \t\n"
+	}
+
+	fields := splitByIFS(line, ifs, len(varNames))
+
+	// Assign fields to variables.
+	for i, name := range varNames {
+		if i < len(fields) {
+			state.setVar(name, fields[i])
+		} else {
+			state.setVar(name, "")
+		}
+	}
+
+	return 0
+}
+
+// splitByIFS splits a line into at most maxFields fields using IFS.
+// The last field gets the remainder of the line (unsplit).
+// IFS whitespace characters are trimmed and collapsed; non-whitespace
+// IFS characters each act as individual delimiters.
+func splitByIFS(line, ifs string, maxFields int) []string {
+	if maxFields <= 0 {
+		return nil
+	}
+
+	isIFSWhitespace := func(r rune) bool {
+		return (r == ' ' || r == '\t' || r == '\n') && strings.ContainsRune(ifs, r)
+	}
+	isIFS := func(r rune) bool {
+		return strings.ContainsRune(ifs, r)
+	}
+
+	var fields []string
+	runes := []rune(line)
+	i := 0
+
+	// Skip leading IFS whitespace.
+	for i < len(runes) && isIFSWhitespace(runes[i]) {
+		i++
+	}
+
+	for i < len(runes) {
+		if len(fields) == maxFields-1 {
+			// Last field: take the rest (but trim trailing IFS whitespace).
+			rest := string(runes[i:])
+			rest = strings.TrimRightFunc(rest, func(r rune) bool {
+				return isIFSWhitespace(r)
+			})
+			fields = append(fields, rest)
+			return fields
+		}
+
+		// Collect characters until next IFS delimiter.
+		start := i
+		for i < len(runes) && !isIFS(runes[i]) {
+			i++
+		}
+		fields = append(fields, string(runes[start:i]))
+
+		if i >= len(runes) {
+			break
+		}
+
+		// Skip IFS delimiter(s).
+		if isIFSWhitespace(runes[i]) {
+			for i < len(runes) && isIFSWhitespace(runes[i]) {
+				i++
+			}
+			// If a non-whitespace IFS char follows, skip it too.
+			if i < len(runes) && isIFS(runes[i]) && !isIFSWhitespace(runes[i]) {
+				i++
+				for i < len(runes) && isIFSWhitespace(runes[i]) {
+					i++
+				}
+			}
+		} else {
+			// Non-whitespace IFS char: skip it and any surrounding IFS whitespace.
+			i++
+			for i < len(runes) && isIFSWhitespace(runes[i]) {
+				i++
+			}
+		}
+	}
+
+	return fields
+}
+
+func builtinTrue(state *shellState, args []string, stdin, stdout *os.File) int  { return 0 }
+func builtinFalse(state *shellState, args []string, stdin, stdout *os.File) int { return 1 }
 
 // builtinDebugTokens toggles printing of the token stream before parsing.
-func builtinDebugTokens(state *shellState, args []string, stdout *os.File) int {
+func builtinDebugTokens(state *shellState, args []string, stdin, stdout *os.File) int {
 	state.debugTokens = !state.debugTokens
 	if state.debugTokens {
 		fmt.Fprintln(stdout, "token debugging on")
@@ -211,7 +392,7 @@ func builtinDebugTokens(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinDebugAST toggles printing of the AST before expansion.
-func builtinDebugAST(state *shellState, args []string, stdout *os.File) int {
+func builtinDebugAST(state *shellState, args []string, stdin, stdout *os.File) int {
 	state.debugAST = !state.debugAST
 	if state.debugAST {
 		fmt.Fprintln(stdout, "AST debugging on")
@@ -222,7 +403,7 @@ func builtinDebugAST(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinDebugExpanded toggles printing of the AST after expansion.
-func builtinDebugExpanded(state *shellState, args []string, stdout *os.File) int {
+func builtinDebugExpanded(state *shellState, args []string, stdin, stdout *os.File) int {
 	state.debugExpanded = !state.debugExpanded
 	if state.debugExpanded {
 		fmt.Fprintln(stdout, "expanded AST debugging on")
@@ -233,7 +414,7 @@ func builtinDebugExpanded(state *shellState, args []string, stdout *os.File) int
 }
 
 // builtinHistory prints the command history.
-func builtinHistory(state *shellState, args []string, stdout *os.File) int {
+func builtinHistory(state *shellState, args []string, stdin, stdout *os.File) int {
 	if state.ed == nil {
 		fmt.Fprintln(os.Stderr, "gosh: history: not available in non-interactive mode")
 		return 1
@@ -246,7 +427,7 @@ func builtinHistory(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinVersion prints the shell version.
-func builtinVersion(state *shellState, args []string, stdout *os.File) int {
+func builtinVersion(state *shellState, args []string, stdin, stdout *os.File) int {
 	fmt.Fprintf(stdout, "gosh %s\n", version)
 	return 0
 }
@@ -259,7 +440,7 @@ func init() {
 }
 
 // builtinSource reads and executes a file in the current shell.
-func builtinSource(state *shellState, args []string, stdout *os.File) int {
+func builtinSource(state *shellState, args []string, stdin, stdout *os.File) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "gosh: source: filename argument required")
 		return 1
@@ -285,7 +466,7 @@ func parseJobSpec(args []string) (int, error) {
 }
 
 // builtinJobs lists all active jobs.
-func builtinJobs(state *shellState, args []string, stdout *os.File) int {
+func builtinJobs(state *shellState, args []string, stdin, stdout *os.File) int {
 	state.reapJobs()
 	for _, j := range state.jobs {
 		fmt.Fprintf(stdout, "[%d]+  %-24s%s\n", j.id, j.state, j.cmd)
@@ -294,7 +475,7 @@ func builtinJobs(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinFg brings a job to the foreground.
-func builtinFg(state *shellState, args []string, stdout *os.File) int {
+func builtinFg(state *shellState, args []string, stdin, stdout *os.File) int {
 	id, err := parseJobSpec(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: fg: %v\n", err)
@@ -358,7 +539,7 @@ func builtinFg(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinBg resumes a stopped job in the background.
-func builtinBg(state *shellState, args []string, stdout *os.File) int {
+func builtinBg(state *shellState, args []string, stdin, stdout *os.File) int {
 	id, err := parseJobSpec(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: bg: %v\n", err)

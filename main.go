@@ -37,6 +37,7 @@ type shellState struct {
 	returnFlag       bool                 // set by return builtin to exit function
 	loopDepth        int                  // nesting depth of for/while loops
 	positionalParams []string             // $1, $2, ... for function arguments
+	localScopes      []map[string]savedVar // stack of local variable scopes (one per function call)
 	jobs             []*job               // job table for background/stopped jobs
 	nextJobID        int                  // next job number to assign
 	debugTokens      bool                 // print tokens before parsing

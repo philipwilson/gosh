@@ -293,6 +293,49 @@ func TestLexHeredocBodyArith(t *testing.T) {
 	}
 }
 
+// --- Here string tests ---
+
+func TestHerestringToken(t *testing.T) {
+	tokens, err := Lex("cat <<<hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD,       // cat
+		TOKEN_HERESTRING, // <<<
+		TOKEN_WORD,       // hello
+		TOKEN_EOF,
+	)
+}
+
+func TestHerestringFdAbsorb(t *testing.T) {
+	tokens, err := Lex("cmd 0<<<hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens[1].Type != TOKEN_HERESTRING {
+		t.Fatalf("expected TOKEN_HERESTRING, got %s", tokens[1].Type)
+	}
+	if tokens[1].Fd != 0 {
+		t.Errorf("fd: got %d, want 0", tokens[1].Fd)
+	}
+}
+
+func TestHerestringInPipeline(t *testing.T) {
+	tokens, err := Lex("cat <<<hello | wc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD,       // cat
+		TOKEN_HERESTRING, // <<<
+		TOKEN_WORD,       // hello
+		TOKEN_PIPE,       // |
+		TOKEN_WORD,       // wc
+		TOKEN_EOF,
+	)
+}
+
 func TestResolveHeredocsEmpty(t *testing.T) {
 	tokens, err := Lex("cat <<EOF")
 	if err != nil {

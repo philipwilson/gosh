@@ -493,6 +493,24 @@ func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 				File: rTok.Heredoc.Body,
 			})
 
+		case lexer.TOKEN_HERESTRING:
+			rTok := p.next()
+			fd := rTok.Fd
+			if fd < 0 {
+				fd = 0 // default fd for here string is stdin
+			}
+			// The word after <<< is the value.
+			wordTok := p.peek()
+			if wordTok.Type != lexer.TOKEN_WORD {
+				return nil, fmt.Errorf("expected word after <<<, got %s", wordTok)
+			}
+			p.next()
+			cmd.Redirects = append(cmd.Redirects, Redirect{
+				Fd:   fd,
+				Type: REDIR_HERESTRING,
+				File: wordTok.Parts,
+			})
+
 		case lexer.TOKEN_DUP:
 			rTok := p.next()
 			target := lexer.Word{{Text: rTok.Val, Quote: lexer.Unquoted}}

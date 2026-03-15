@@ -478,8 +478,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 			restoreVars(state, saved)
 			return 1
 		}
-		_ = fds[0] // builtins don't currently read from stdin
-		status := fn(state, args[1:], fds[1])
+		status := fn(state, args[1:], fds[0], fds[1])
 		for _, f := range opened {
 			f.Close()
 		}
@@ -527,8 +526,16 @@ func execFunction(state *shellState, body *parser.List, args []string, stdin, st
 	savedParams := state.positionalParams
 	state.positionalParams = args
 
+	// Push a new local scope for this function call.
+	state.localScopes = append(state.localScopes, make(map[string]savedVar))
+
 	cloned := parser.CloneList(body)
 	execList(state, cloned, stdin, stdout)
+
+	// Pop and restore local variables.
+	scope := state.localScopes[len(state.localScopes)-1]
+	state.localScopes = state.localScopes[:len(state.localScopes)-1]
+	restoreVars(state, scope)
 
 	status := state.lastStatus
 	state.returnFlag = false
@@ -619,6 +626,19 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 			pr, pw, err := os.Pipe()
 			if err != nil {
 				return fail(fmt.Errorf("heredoc pipe: %v", err))
+			}
+			go func() {
+				pw.WriteString(body)
+				pw.Close()
+			}()
+			opened = append(opened, pr)
+			fds[fd] = pr
+
+		case parser.REDIR_HERESTRING:
+			body := r.File.String() + "\n"
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				return fail(fmt.Errorf("herestring pipe: %v", err))
 			}
 			go func() {
 				pw.WriteString(body)

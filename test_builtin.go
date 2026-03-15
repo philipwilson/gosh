@@ -8,7 +8,7 @@ import (
 )
 
 // builtinTest implements the 'test' builtin (no closing bracket required).
-func builtinTest(state *shellState, args []string, stdout *os.File) int {
+func builtinTest(state *shellState, args []string, stdin, stdout *os.File) int {
 	result, err := evalTest(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: test: %v\n", err)
@@ -21,12 +21,12 @@ func builtinTest(state *shellState, args []string, stdout *os.File) int {
 }
 
 // builtinBracket implements the '[' builtin (requires closing ']').
-func builtinBracket(state *shellState, args []string, stdout *os.File) int {
+func builtinBracket(state *shellState, args []string, stdin, stdout *os.File) int {
 	if len(args) == 0 || args[len(args)-1] != "]" {
 		fmt.Fprintln(os.Stderr, "gosh: [: missing ']'")
 		return 2
 	}
-	return builtinTest(state, args[:len(args)-1], stdout)
+	return builtinTest(state, args[:len(args)-1], stdin, stdout)
 }
 
 // evalTest evaluates a test expression and returns true/false.

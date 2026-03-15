@@ -44,6 +44,7 @@ const (
 	REDIR_APPEND                   // >>
 	REDIR_DUP                     // >&N or <&N (fd duplication)
 	REDIR_HEREDOC                  // << (here document)
+	REDIR_HERESTRING               // <<< (here string)
 )
 
 // Redirect represents a single I/O redirection on a command.
@@ -69,6 +70,8 @@ func (r Redirect) String() string {
 		return fmt.Sprintf("%s>&%s", fdStr, r.File)
 	case REDIR_HEREDOC:
 		return fmt.Sprintf("%s<<heredoc", fdStr)
+	case REDIR_HERESTRING:
+		return fmt.Sprintf("%s<<<%s", fdStr, r.File)
 	}
 	return "?redir"
 }

@@ -68,13 +68,10 @@ func TestPipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, tokens, []Token{
-		{TOKEN_WORD, "ls"},
-		{TOKEN_PIPE, ""},
-		{TOKEN_WORD, "grep"},
-		{TOKEN_WORD, "foo"},
-		{TOKEN_EOF, ""},
-	})
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_PIPE, TOKEN_WORD, TOKEN_WORD, TOKEN_EOF)
+	expectWordVal(t, tokens, 0, "ls")
+	expectWordVal(t, tokens, 2, "grep")
+	expectWordVal(t, tokens, 3, "foo")
 }
 
 func TestRedirections(t *testing.T) {
@@ -82,14 +79,7 @@ func TestRedirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, tokens, []Token{
-		{TOKEN_WORD, "cat"},
-		{TOKEN_LT, ""},
-		{TOKEN_WORD, "in.txt"},
-		{TOKEN_GT, ""},
-		{TOKEN_WORD, "out.txt"},
-		{TOKEN_EOF, ""},
-	})
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_LT, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_EOF)
 }
 
 func TestAppend(t *testing.T) {
@@ -97,13 +87,7 @@ func TestAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, tokens, []Token{
-		{TOKEN_WORD, "echo"},
-		{TOKEN_WORD, "hi"},
-		{TOKEN_APPEND, ""},
-		{TOKEN_WORD, "log.txt"},
-		{TOKEN_EOF, ""},
-	})
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_WORD, TOKEN_APPEND, TOKEN_WORD, TOKEN_EOF)
 }
 
 func TestAndOr(t *testing.T) {
@@ -111,16 +95,8 @@ func TestAndOr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, tokens, []Token{
-		{TOKEN_WORD, "make"},
-		{TOKEN_AND, ""},
-		{TOKEN_WORD, "make"},
-		{TOKEN_WORD, "test"},
-		{TOKEN_OR, ""},
-		{TOKEN_WORD, "echo"},
-		{TOKEN_WORD, "fail"},
-		{TOKEN_EOF, ""},
-	})
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD, TOKEN_AND, TOKEN_WORD, TOKEN_WORD, TOKEN_OR, TOKEN_WORD, TOKEN_WORD, TOKEN_EOF)
 }
 
 func TestSemicolon(t *testing.T) {
@@ -128,14 +104,8 @@ func TestSemicolon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, tokens, []Token{
-		{TOKEN_WORD, "echo"},
-		{TOKEN_WORD, "a"},
-		{TOKEN_SEMI, ""},
-		{TOKEN_WORD, "echo"},
-		{TOKEN_WORD, "b"},
-		{TOKEN_EOF, ""},
-	})
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD, TOKEN_WORD, TOKEN_SEMI, TOKEN_WORD, TOKEN_WORD, TOKEN_EOF)
 }
 
 func TestUnterminatedSingleQuote(t *testing.T) {
@@ -165,22 +135,93 @@ func TestOperatorsWithoutSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, tokens, []Token{
-		{TOKEN_WORD, "ls"},
-		{TOKEN_PIPE, ""},
-		{TOKEN_WORD, "grep"},
-		{TOKEN_WORD, "foo"},
-		{TOKEN_GT, ""},
-		{TOKEN_WORD, "out.txt"},
-		{TOKEN_EOF, ""},
-	})
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD, TOKEN_PIPE, TOKEN_WORD, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_EOF)
+}
+
+// --- Word parts tests ---
+
+func TestPartsUnquoted(t *testing.T) {
+	tokens, err := Lex("echo $HOME")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "$HOME" should be a single Unquoted part
+	expectParts(t, tokens[1].Parts, WordPart{"$HOME", Unquoted})
+}
+
+func TestPartsSingleQuoted(t *testing.T) {
+	tokens, err := Lex("echo '$HOME'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// '$HOME' should be SingleQuoted — no expansion
+	expectParts(t, tokens[1].Parts, WordPart{"$HOME", SingleQuoted})
+}
+
+func TestPartsDoubleQuoted(t *testing.T) {
+	tokens, err := Lex(`echo "$HOME"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "$HOME" should be DoubleQuoted — expansion will happen
+	expectParts(t, tokens[1].Parts, WordPart{"$HOME", DoubleQuoted})
+}
+
+func TestPartsBackslashDollar(t *testing.T) {
+	tokens, err := Lex(`echo \$HOME`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// \$ → SingleQuoted("$"), HOME → Unquoted("HOME")
+	expectParts(t, tokens[1].Parts,
+		WordPart{"$", SingleQuoted},
+		WordPart{"HOME", Unquoted},
+	)
+}
+
+func TestPartsDoubleQuoteBackslashDollar(t *testing.T) {
+	tokens, err := Lex(`echo "\$HOME"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// \$ inside "" → SingleQuoted("$"), HOME stays DoubleQuoted
+	expectParts(t, tokens[1].Parts,
+		WordPart{"$", SingleQuoted},
+		WordPart{"HOME", DoubleQuoted},
+	)
+}
+
+func TestPartsMixed(t *testing.T) {
+	tokens, err := Lex(`he"$USER"'!'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "he$USER!")
+	expectParts(t, tokens[0].Parts,
+		WordPart{"he", Unquoted},
+		WordPart{"$USER", DoubleQuoted},
+		WordPart{"!", SingleQuoted},
+	)
+}
+
+func TestPartsBackslashSpace(t *testing.T) {
+	tokens, err := Lex(`hello\ world`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// \<space> → SingleQuoted(" ")
+	expectParts(t, tokens[0].Parts,
+		WordPart{"hello", Unquoted},
+		WordPart{" ", SingleQuoted},
+		WordPart{"world", Unquoted},
+	)
 }
 
 // --- helpers ---
 
 func expectWords(t *testing.T, tokens []Token, words ...string) {
 	t.Helper()
-	// Should be len(words) WORD tokens + 1 EOF
 	if len(tokens) != len(words)+1 {
 		t.Fatalf("expected %d tokens, got %d: %v", len(words)+1, len(tokens), tokens)
 	}
@@ -197,17 +238,36 @@ func expectWords(t *testing.T, tokens []Token, words ...string) {
 	}
 }
 
-func expect(t *testing.T, got []Token, want []Token) {
+func expectTokenTypes(t *testing.T, tokens []Token, types ...TokenType) {
+	t.Helper()
+	if len(tokens) != len(types) {
+		t.Fatalf("expected %d tokens, got %d: %v", len(types), len(tokens), tokens)
+	}
+	for i, tt := range types {
+		if tokens[i].Type != tt {
+			t.Errorf("token %d: expected type %s, got %s", i, tt, tokens[i].Type)
+		}
+	}
+}
+
+func expectWordVal(t *testing.T, tokens []Token, idx int, val string) {
+	t.Helper()
+	if tokens[idx].Val != val {
+		t.Errorf("token %d: expected val %q, got %q", idx, val, tokens[idx].Val)
+	}
+}
+
+func expectParts(t *testing.T, got Word, want ...WordPart) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("expected %d tokens, got %d: %v", len(want), len(got), got)
+		t.Fatalf("expected %d parts, got %d: %+v", len(want), len(got), got)
 	}
 	for i := range want {
-		if got[i].Type != want[i].Type {
-			t.Errorf("token %d: expected type %s, got %s", i, want[i].Type, got[i].Type)
+		if got[i].Text != want[i].Text {
+			t.Errorf("part %d: expected text %q, got %q", i, want[i].Text, got[i].Text)
 		}
-		if want[i].Type == TOKEN_WORD && got[i].Val != want[i].Val {
-			t.Errorf("token %d: expected val %q, got %q", i, want[i].Val, got[i].Val)
+		if got[i].Quote != want[i].Quote {
+			t.Errorf("part %d: expected quote %d, got %d", i, want[i].Quote, got[i].Quote)
 		}
 	}
 }

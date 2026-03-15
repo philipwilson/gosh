@@ -15,9 +15,50 @@
 //
 // Operator tokens (|, <, >, >>, ;, &&, ||) are recognized only in
 // unquoted context. Whitespace separates tokens only when unquoted.
+//
+// Each WORD token carries both a plain string value (Val) and a
+// slice of WordParts that preserves quoting context. The expander
+// uses Parts to know where $VAR expansion should occur (not inside
+// single quotes, not on backslash-escaped $).
 package lexer
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// QuoteContext indicates how a piece of text was quoted in the input.
+// The expander uses this to decide whether to perform variable
+// expansion and (later) glob expansion.
+type QuoteContext int
+
+const (
+	Unquoted     QuoteContext = iota // bare text — expand $VAR and globs
+	SingleQuoted                     // inside '...' or after \ — fully literal
+	DoubleQuoted                     // inside "..." — expand $VAR but not globs
+)
+
+// WordPart is a fragment of a word with a uniform quoting context.
+// A single shell word like  he"$USER"'!' produces three parts:
+//
+//	[{Unquoted, "he"}, {DoubleQuoted, "$USER"}, {SingleQuoted, "!"}]
+type WordPart struct {
+	Text  string
+	Quote QuoteContext
+}
+
+// Word is a complete shell word made up of one or more parts.
+type Word []WordPart
+
+// String joins all parts' text into a single string, discarding
+// quoting context. Use this to get the resolved value after expansion.
+func (w Word) String() string {
+	var sb strings.Builder
+	for _, p := range w {
+		sb.WriteString(p.Text)
+	}
+	return sb.String()
+}
 
 // TokenType identifies the kind of token.
 type TokenType int
@@ -61,8 +102,9 @@ func (t TokenType) String() string {
 
 // Token is a single lexical unit produced by the lexer.
 type Token struct {
-	Type TokenType
-	Val  string // the token's value (meaningful for WORD tokens)
+	Type  TokenType
+	Val   string // the token's value (meaningful for WORD tokens)
+	Parts Word   // quoting-aware parts (meaningful for WORD tokens)
 }
 
 func (t Token) String() string {
@@ -127,8 +169,11 @@ func (l *lexer) lex() ([]Token, error) {
 				tokens = append(tokens, Token{Type: TOKEN_AND})
 			} else {
 				// Bare & (background) — treat as a word for now.
-				// We'll handle it properly in a later milestone.
-				tokens = append(tokens, Token{Type: TOKEN_WORD, Val: "&"})
+				tokens = append(tokens, Token{
+					Type:  TOKEN_WORD,
+					Val:   "&",
+					Parts: Word{{Text: "&", Quote: Unquoted}},
+				})
 			}
 
 		case ch == ';':
@@ -149,11 +194,15 @@ func (l *lexer) lex() ([]Token, error) {
 			tokens = append(tokens, Token{Type: TOKEN_LT})
 
 		default:
-			word, err := l.readWord()
+			parts, err := l.readWord()
 			if err != nil {
 				return nil, err
 			}
-			tokens = append(tokens, Token{Type: TOKEN_WORD, Val: word})
+			tokens = append(tokens, Token{
+				Type:  TOKEN_WORD,
+				Val:   parts.String(),
+				Parts: parts,
+			})
 		}
 	}
 
@@ -171,15 +220,27 @@ func (l *lexer) skipSpaces() {
 	}
 }
 
-// readWord reads a word token. A word is a sequence of:
+// readWord reads a word token, returning a slice of WordParts that
+// preserves the quoting context of each fragment.
+//
+// A word is a sequence of:
 //   - unquoted characters (terminated by whitespace or operator chars)
 //   - single-quoted strings
 //   - double-quoted strings
 //   - backslash-escaped characters
 //
 // These can be freely mixed: he"ll"o → hello
-func (l *lexer) readWord() (string, error) {
+func (l *lexer) readWord() (Word, error) {
+	var parts Word
 	var buf []rune
+
+	// flushUnquoted saves any accumulated unquoted characters as a part.
+	flushUnquoted := func() {
+		if len(buf) > 0 {
+			parts = append(parts, WordPart{Text: string(buf), Quote: Unquoted})
+			buf = nil
+		}
+	}
 
 	for {
 		ch, ok := l.peek()
@@ -189,31 +250,33 @@ func (l *lexer) readWord() (string, error) {
 
 		switch {
 		case ch == '\'':
-			s, err := l.readSingleQuote()
+			flushUnquoted()
+			part, err := l.readSingleQuote()
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			buf = append(buf, s...)
+			parts = append(parts, part)
 
 		case ch == '"':
-			s, err := l.readDoubleQuote()
+			flushUnquoted()
+			dqParts, err := l.readDoubleQuote()
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			buf = append(buf, s...)
+			parts = append(parts, dqParts...)
 
 		case ch == '\\':
+			flushUnquoted()
 			l.next() // consume the backslash
 			esc, ok := l.next()
 			if !ok {
-				// Trailing backslash — bash waits for continuation.
-				// We treat it as an error for now.
-				return "", fmt.Errorf("unexpected end of input after \\")
+				return nil, fmt.Errorf("unexpected end of input after \\")
 			}
-			buf = append(buf, esc)
+			// Backslash-escaped characters are fully literal,
+			// marked as SingleQuoted to suppress expansion.
+			parts = append(parts, WordPart{Text: string(esc), Quote: SingleQuoted})
 
 		case isOperator(ch) || ch == ' ' || ch == '\t':
-			// End of this word — don't consume the delimiter.
 			goto done
 
 		default:
@@ -223,32 +286,44 @@ func (l *lexer) readWord() (string, error) {
 	}
 
 done:
-	return string(buf), nil
+	flushUnquoted()
+	return parts, nil
 }
 
 // readSingleQuote reads a single-quoted string. The opening quote
 // has NOT been consumed yet. Everything between the quotes is literal.
-func (l *lexer) readSingleQuote() ([]rune, error) {
+func (l *lexer) readSingleQuote() (WordPart, error) {
 	l.next() // consume opening '
 	var buf []rune
 
 	for {
 		ch, ok := l.next()
 		if !ok {
-			return nil, fmt.Errorf("unterminated single quote")
+			return WordPart{}, fmt.Errorf("unterminated single quote")
 		}
 		if ch == '\'' {
-			return buf, nil
+			return WordPart{Text: string(buf), Quote: SingleQuoted}, nil
 		}
 		buf = append(buf, ch)
 	}
 }
 
 // readDoubleQuote reads a double-quoted string. The opening quote
-// has NOT been consumed yet. Backslash escapes work for \, ", $, `.
-func (l *lexer) readDoubleQuote() ([]rune, error) {
+// has NOT been consumed yet. Returns multiple parts because \$
+// inside double quotes must be marked as literal (SingleQuoted)
+// to suppress expansion.
+func (l *lexer) readDoubleQuote() ([]WordPart, error) {
 	l.next() // consume opening "
+	var parts []WordPart
 	var buf []rune
+
+	// flush saves any accumulated double-quoted characters as a part.
+	flush := func() {
+		if len(buf) > 0 {
+			parts = append(parts, WordPart{Text: string(buf), Quote: DoubleQuoted})
+			buf = nil
+		}
+	}
 
 	for {
 		ch, ok := l.next()
@@ -258,7 +333,8 @@ func (l *lexer) readDoubleQuote() ([]rune, error) {
 
 		switch ch {
 		case '"':
-			return buf, nil
+			flush()
+			return parts, nil
 
 		case '\\':
 			esc, ok := l.next()
@@ -269,7 +345,11 @@ func (l *lexer) readDoubleQuote() ([]rune, error) {
 			// are actually escaped by backslash: $ ` " \ newline
 			// For anything else, the backslash is preserved.
 			switch esc {
-			case '\\', '"', '$', '`':
+			case '$':
+				// \$ in double quotes → literal $, must not expand.
+				flush()
+				parts = append(parts, WordPart{Text: "$", Quote: SingleQuoted})
+			case '\\', '"', '`':
 				buf = append(buf, esc)
 			default:
 				buf = append(buf, '\\', esc)

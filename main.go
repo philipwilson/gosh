@@ -5,14 +5,74 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 
+	"gosh/expander"
 	"gosh/lexer"
 	"gosh/parser"
 )
 
+// shellState holds the shell's mutable state: variables, export
+// set, and the last command's exit status.
+type shellState struct {
+	vars       map[string]string // shell variables
+	exported   map[string]bool   // which variables are exported to children
+	lastStatus int               // $? — exit status of last command
+}
+
+func newShellState() *shellState {
+	s := &shellState{
+		vars:     make(map[string]string),
+		exported: make(map[string]bool),
+	}
+	// Import all environment variables into the shell's variable
+	// table and mark them as exported.
+	for _, entry := range os.Environ() {
+		if k, v, ok := strings.Cut(entry, "="); ok {
+			s.vars[k] = v
+			s.exported[k] = true
+		}
+	}
+	return s
+}
+
+// lookup returns the value of a variable, including special
+// variables $? and $$. Returns "" for undefined variables.
+func (s *shellState) lookup(name string) string {
+	switch name {
+	case "?":
+		return strconv.Itoa(s.lastStatus)
+	case "$":
+		return strconv.Itoa(os.Getpid())
+	default:
+		return s.vars[name]
+	}
+}
+
+// environ builds the environment for child processes: all
+// exported variables as KEY=VALUE strings.
+func (s *shellState) environ() []string {
+	var env []string
+	for k := range s.exported {
+		env = append(env, k+"="+s.vars[k])
+	}
+	return env
+}
+
+// setVar sets a shell variable.
+func (s *shellState) setVar(name, value string) {
+	s.vars[name] = value
+}
+
+// exportVar marks a variable for export to child processes.
+func (s *shellState) exportVar(name string) {
+	s.exported[name] = true
+}
+
 func main() {
+	state := newShellState()
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
@@ -44,40 +104,27 @@ func main() {
 			continue
 		}
 
-		execList(list)
+		// Expand variables in the AST.
+		expander.Expand(list, state.lookup)
+
+		execList(state, list)
 	}
 }
 
-// execList walks the list and runs each pipeline sequentially.
-// For now, ;, &&, and || all just run the next pipeline unconditionally.
-// Proper short-circuit semantics come in M10.
-func execList(list *parser.List) {
+func execList(state *shellState, list *parser.List) {
 	for _, entry := range list.Entries {
-		execPipeline(entry.Pipeline)
+		execPipeline(state, entry.Pipeline)
 	}
 }
 
-// execPipeline runs a pipeline by wiring adjacent commands together
-// with os.Pipe(). All commands in the pipeline run concurrently,
-// and we wait for all of them to finish.
-//
-// For a pipeline "A | B | C":
-//
-//	A: stdin=parent  stdout=pipe1_w
-//	B: stdin=pipe1_r stdout=pipe2_w
-//	C: stdin=pipe2_r stdout=parent
-//
-// Redirections on individual commands override the pipe defaults.
-// For example, "A > file | B" sends A's output to file, not the pipe.
-func execPipeline(pipe *parser.Pipeline) {
+func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	n := len(pipe.Cmds)
 
 	if n == 1 {
-		execSimple(pipe.Cmds[0], os.Stdin, os.Stdout)
+		state.lastStatus = execSimple(state, pipe.Cmds[0], os.Stdin, os.Stdout)
 		return
 	}
 
-	// Create n-1 pipes connecting adjacent commands.
 	type pipePair struct{ r, w *os.File }
 	pipes := make([]pipePair, n-1)
 	for i := range pipes {
@@ -89,11 +136,9 @@ func execPipeline(pipe *parser.Pipeline) {
 		pipes[i] = pipePair{r, w}
 	}
 
-	// Start all commands, collecting processes and any files opened
-	// for redirections so we can clean them up afterwards.
 	type procInfo struct {
 		proc  *os.Process
-		files []*os.File // redirect files to close after wait
+		files []*os.File
 	}
 	infos := make([]procInfo, n)
 
@@ -112,79 +157,106 @@ func execPipeline(pipe *parser.Pipeline) {
 			stdout = pipes[i].w
 		}
 
-		proc, opened := startProcess(cmd, stdin, stdout)
+		proc, opened := startProcess(state, cmd, stdin, stdout)
 		infos[i] = procInfo{proc: proc, files: opened}
 	}
 
-	// Close all pipe fds in the parent.
 	for _, p := range pipes {
 		p.r.Close()
 		p.w.Close()
 	}
 
-	// Wait for all children, then close redirect files.
 	for i, info := range infos {
 		if info.proc == nil {
 			continue
 		}
-		state, err := info.proc.Wait()
-
-		// Close redirect files now that the child has finished.
+		status := waitProc(info.proc)
 		for _, f := range info.files {
 			f.Close()
 		}
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: wait: %v\n", err)
-			continue
-		}
-		if i == n-1 && !state.Success() {
-			if status, ok := state.Sys().(syscall.WaitStatus); ok {
-				fmt.Fprintf(os.Stderr, "gosh: exit status %d\n", status.ExitStatus())
-			}
+		if i == n-1 {
+			state.lastStatus = status
 		}
 	}
 }
 
-// applyRedirects opens files for each redirection on the command,
-// overriding stdin/stdout as appropriate. It returns the final
-// stdin, stdout, and a list of opened files that the caller must
-// close after the process finishes.
+// execSimple runs a single command. Returns exit status.
+func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) int {
+	// Handle assignment-only commands (no args): just set variables.
+	if len(cmd.Args) == 0 {
+		for _, a := range cmd.Assigns {
+			state.setVar(a.Name, a.Value.String())
+		}
+		return 0
+	}
+
+	// Handle "export" builtin.
+	args := cmd.ArgStrings()
+	if args[0] == "export" {
+		return builtinExport(state, args[1:])
+	}
+
+	proc, opened := startProcess(state, cmd, stdin, stdout)
+	if proc == nil {
+		return 127 // command not found
+	}
+
+	status := waitProc(proc)
+	for _, f := range opened {
+		f.Close()
+	}
+	return status
+}
+
+// builtinExport handles "export VAR" and "export VAR=VALUE".
+func builtinExport(state *shellState, args []string) int {
+	for _, arg := range args {
+		if name, value, ok := strings.Cut(arg, "="); ok {
+			state.setVar(name, value)
+			state.exportVar(name)
+		} else {
+			state.exportVar(arg)
+		}
+	}
+	return 0
+}
+
 func applyRedirects(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.File, *os.File, []*os.File, error) {
 	var opened []*os.File
 
 	for _, r := range cmd.Redirects {
+		filename := r.File.String()
+
 		switch r.Type {
 		case parser.REDIR_IN:
-			f, err := os.Open(r.File)
+			f, err := os.Open(filename)
 			if err != nil {
-				// Clean up any files we already opened.
 				for _, o := range opened {
 					o.Close()
 				}
-				return nil, nil, nil, fmt.Errorf("%s: %v", r.File, err)
+				return nil, nil, nil, fmt.Errorf("%s: %v", filename, err)
 			}
 			opened = append(opened, f)
 			stdin = f
 
 		case parser.REDIR_OUT:
-			f, err := os.OpenFile(r.File, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+			f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 			if err != nil {
 				for _, o := range opened {
 					o.Close()
 				}
-				return nil, nil, nil, fmt.Errorf("%s: %v", r.File, err)
+				return nil, nil, nil, fmt.Errorf("%s: %v", filename, err)
 			}
 			opened = append(opened, f)
 			stdout = f
 
 		case parser.REDIR_APPEND:
-			f, err := os.OpenFile(r.File, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+			f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 			if err != nil {
 				for _, o := range opened {
 					o.Close()
 				}
-				return nil, nil, nil, fmt.Errorf("%s: %v", r.File, err)
+				return nil, nil, nil, fmt.Errorf("%s: %v", filename, err)
 			}
 			opened = append(opened, f)
 			stdout = f
@@ -194,17 +266,15 @@ func applyRedirects(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.File, *o
 	return stdin, stdout, opened, nil
 }
 
-// startProcess resolves a command, applies redirections, and starts
-// the process. Returns the process and any opened redirect files
-// (which the caller must close after the process exits).
-func startProcess(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.Process, []*os.File) {
-	if len(cmd.Args) == 0 {
+func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.Process, []*os.File) {
+	args := cmd.ArgStrings()
+	if len(args) == 0 {
 		return nil, nil
 	}
 
-	path, err := exec.LookPath(cmd.Args[0])
+	path, err := exec.LookPath(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %s: command not found\n", cmd.Args[0])
+		fmt.Fprintf(os.Stderr, "gosh: %s: command not found\n", args[0])
 		return nil, nil
 	}
 
@@ -214,13 +284,20 @@ func startProcess(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.Process, [
 		return nil, nil
 	}
 
-	proc, err := os.StartProcess(path, cmd.Args, &os.ProcAttr{
-		Env:   os.Environ(),
+	// Build environment: start with exported vars, then add
+	// any per-command assignments.
+	env := state.environ()
+	for _, a := range cmd.Assigns {
+		env = append(env, a.Name+"="+a.Value.String())
+	}
+
+	proc, err := os.StartProcess(path, args, &os.ProcAttr{
+		Env:   env,
 		Files: []*os.File{stdin, stdout, os.Stderr},
 		Sys:   &syscall.SysProcAttr{},
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", cmd.Args[0], err)
+		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", args[0], err)
 		for _, f := range opened {
 			f.Close()
 		}
@@ -229,27 +306,18 @@ func startProcess(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.Process, [
 	return proc, opened
 }
 
-// execSimple runs a single command (not part of a multi-stage pipeline).
-func execSimple(cmd *parser.SimpleCmd, stdin, stdout *os.File) {
-	proc, opened := startProcess(cmd, stdin, stdout)
-	if proc == nil {
-		return
-	}
-
-	state, err := proc.Wait()
-
-	for _, f := range opened {
-		f.Close()
-	}
-
+// waitProc waits for a process and returns its exit status.
+func waitProc(proc *os.Process) int {
+	ps, err := proc.Wait()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: wait: %v\n", err)
-		return
+		return 1
 	}
-
-	if !state.Success() {
-		if status, ok := state.Sys().(syscall.WaitStatus); ok {
-			fmt.Fprintf(os.Stderr, "gosh: exit status %d\n", status.ExitStatus())
-		}
+	if status, ok := ps.Sys().(syscall.WaitStatus); ok {
+		return status.ExitStatus()
 	}
+	if ps.Success() {
+		return 0
+	}
+	return 1
 }

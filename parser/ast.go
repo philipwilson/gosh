@@ -4,16 +4,20 @@
 //
 //	list       = pipeline ((';' | '&&' | '||') pipeline)*
 //	pipeline   = command ('|' command)*
-//	command    = (word | redirect)+
+//	command    = (assign)* (word | redirect)*
 //	redirect   = ('<' | '>' | '>>') word
+//	assign     = NAME '=' word   (recognized only before the first non-assignment word)
 //
 // The AST is intentionally simple: three node types cover everything
-// we need through M5 (pipes and redirections). Control-flow operators
-// (;, &&, ||) are captured so we can execute them properly in M10,
-// but for now the executor can walk a List and run each pipeline.
+// we need through M6. Control-flow operators (;, &&, ||) are captured
+// so we can execute them properly in M10.
 package parser
 
-import "fmt"
+import (
+	"fmt"
+	"gosh/lexer"
+	"strings"
+)
 
 // Node is the interface satisfied by all AST nodes.
 type Node interface {
@@ -35,7 +39,7 @@ const (
 // Redirect represents a single I/O redirection on a command.
 type Redirect struct {
 	Type RedirType
-	File string // the target filename
+	File lexer.Word // target filename (may contain $VAR for expansion)
 }
 
 func (r Redirect) String() string {
@@ -50,33 +54,59 @@ func (r Redirect) String() string {
 	return "?redir"
 }
 
+// --- Assignment ---
+
+// Assignment represents a variable assignment like FOO=bar.
+type Assignment struct {
+	Name  string
+	Value lexer.Word // the value (may contain $VAR for expansion)
+}
+
+func (a Assignment) String() string {
+	return fmt.Sprintf("%s=%s", a.Name, a.Value)
+}
+
 // --- SimpleCmd ---
 
-// SimpleCmd is a single command: a list of argument words and
-// zero or more I/O redirections.
+// SimpleCmd is a single command: optional assignments, argument words,
+// and zero or more I/O redirections.
 //
-//	echo hello world > out.txt
-//	→ Args: ["echo", "hello", "world"], Redirects: [>out.txt]
+//	FOO=bar echo hello world > out.txt
+//	→ Assigns: [{FOO, bar}], Args: [echo, hello, world], Redirects: [>out.txt]
 type SimpleCmd struct {
-	Args      []string
+	Assigns   []Assignment
+	Args      []lexer.Word
 	Redirects []Redirect
 }
 
 func (c *SimpleCmd) node() {}
 func (c *SimpleCmd) String() string {
-	s := fmt.Sprintf("Cmd%v", c.Args)
+	var parts []string
+	for _, a := range c.Assigns {
+		parts = append(parts, a.String())
+	}
+	for _, w := range c.Args {
+		parts = append(parts, w.String())
+	}
+	s := "Cmd[" + strings.Join(parts, " ") + "]"
 	for _, r := range c.Redirects {
 		s += " " + r.String()
 	}
 	return s
 }
 
+// ArgStrings returns the args as plain strings (joining word parts).
+func (c *SimpleCmd) ArgStrings() []string {
+	out := make([]string, len(c.Args))
+	for i, w := range c.Args {
+		out[i] = w.String()
+	}
+	return out
+}
+
 // --- Pipeline ---
 
 // Pipeline is one or more commands connected by pipes.
-//
-//	ls -l | grep foo | wc -l
-//	→ Cmds: [Cmd[ls -l], Cmd[grep foo], Cmd[wc -l]]
 type Pipeline struct {
 	Cmds []*SimpleCmd
 }
@@ -103,9 +133,6 @@ type ListEntry struct {
 }
 
 // List is a sequence of pipelines separated by ;, &&, or ||.
-//
-//	make && make test ; echo done
-//	→ [{make, "&&"}, {make test, ";"}, {echo done, ""}]
 type List struct {
 	Entries []ListEntry
 }

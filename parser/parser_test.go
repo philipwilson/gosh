@@ -58,7 +58,7 @@ func TestRedirectOut(t *testing.T) {
 	if cmd.Redirects[0].Type != REDIR_OUT {
 		t.Errorf("expected REDIR_OUT, got %d", cmd.Redirects[0].Type)
 	}
-	if cmd.Redirects[0].File != "out.txt" {
+	if cmd.Redirects[0].File.String() != "out.txt" {
 		t.Errorf("expected out.txt, got %s", cmd.Redirects[0].File)
 	}
 }
@@ -74,7 +74,7 @@ func TestRedirectIn(t *testing.T) {
 	if cmd.Redirects[0].Type != REDIR_IN {
 		t.Errorf("expected REDIR_IN, got %d", cmd.Redirects[0].Type)
 	}
-	if cmd.Redirects[0].File != "input.txt" {
+	if cmd.Redirects[0].File.String() != "input.txt" {
 		t.Errorf("expected input.txt, got %s", cmd.Redirects[0].File)
 	}
 }
@@ -156,17 +156,12 @@ func TestPipelineWithRedirects(t *testing.T) {
 		t.Fatalf("expected 3 commands, got %d", len(pipe.Cmds))
 	}
 
-	// First command: cat < in.txt
 	if len(pipe.Cmds[0].Redirects) != 1 {
 		t.Errorf("cmd 0: expected 1 redirect, got %d", len(pipe.Cmds[0].Redirects))
 	}
-
-	// Middle command: sort (no redirects)
 	if len(pipe.Cmds[1].Redirects) != 0 {
 		t.Errorf("cmd 1: expected 0 redirects, got %d", len(pipe.Cmds[1].Redirects))
 	}
-
-	// Last command: head -5 > out.txt
 	if len(pipe.Cmds[2].Redirects) != 1 {
 		t.Errorf("cmd 2: expected 1 redirect, got %d", len(pipe.Cmds[2].Redirects))
 	}
@@ -194,16 +189,83 @@ func TestQuotedArgsPreserved(t *testing.T) {
 	expectArgs(t, cmd, "echo", "hello world", "foo bar")
 }
 
+// --- Assignment tests ---
+
+func TestSimpleAssignment(t *testing.T) {
+	list := mustParse(t, "FOO=bar")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Assigns) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
+	}
+	if cmd.Assigns[0].Name != "FOO" {
+		t.Errorf("expected name FOO, got %q", cmd.Assigns[0].Name)
+	}
+	if cmd.Assigns[0].Value.String() != "bar" {
+		t.Errorf("expected value bar, got %q", cmd.Assigns[0].Value)
+	}
+	if len(cmd.Args) != 0 {
+		t.Errorf("expected 0 args, got %d", len(cmd.Args))
+	}
+}
+
+func TestAssignmentBeforeCommand(t *testing.T) {
+	list := mustParse(t, "FOO=bar echo hello")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Assigns) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
+	}
+	if cmd.Assigns[0].Name != "FOO" {
+		t.Errorf("expected name FOO, got %q", cmd.Assigns[0].Name)
+	}
+	expectArgs(t, cmd, "echo", "hello")
+}
+
+func TestMultipleAssignments(t *testing.T) {
+	list := mustParse(t, "A=1 B=2 echo hello")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Assigns) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(cmd.Assigns))
+	}
+	if cmd.Assigns[0].Name != "A" || cmd.Assigns[0].Value.String() != "1" {
+		t.Errorf("expected A=1, got %s=%s", cmd.Assigns[0].Name, cmd.Assigns[0].Value)
+	}
+	if cmd.Assigns[1].Name != "B" || cmd.Assigns[1].Value.String() != "2" {
+		t.Errorf("expected B=2, got %s=%s", cmd.Assigns[1].Name, cmd.Assigns[1].Value)
+	}
+}
+
+func TestAssignmentWithQuotedValue(t *testing.T) {
+	list := mustParse(t, `FOO="hello world"`)
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Assigns) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
+	}
+	if cmd.Assigns[0].Value.String() != "hello world" {
+		t.Errorf("expected value 'hello world', got %q", cmd.Assigns[0].Value)
+	}
+}
+
+func TestEqualsAfterCommandIsArg(t *testing.T) {
+	// After the first non-assignment word, = is just part of an arg.
+	list := mustParse(t, "echo FOO=bar")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Assigns) != 0 {
+		t.Errorf("expected 0 assignments, got %d", len(cmd.Assigns))
+	}
+	expectArgs(t, cmd, "echo", "FOO=bar")
+}
+
 // --- helpers ---
 
 func expectArgs(t *testing.T, cmd *SimpleCmd, want ...string) {
 	t.Helper()
-	if len(cmd.Args) != len(want) {
-		t.Fatalf("expected args %v, got %v", want, cmd.Args)
+	got := cmd.ArgStrings()
+	if len(got) != len(want) {
+		t.Fatalf("expected args %v, got %v", want, got)
 	}
 	for i, w := range want {
-		if cmd.Args[i] != w {
-			t.Errorf("arg %d: expected %q, got %q", i, w, cmd.Args[i])
+		if got[i] != w {
+			t.Errorf("arg %d: expected %q, got %q", i, w, got[i])
 		}
 	}
 }

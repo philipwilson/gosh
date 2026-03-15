@@ -46,6 +46,8 @@ const (
 	DoubleQuoted                     // inside "..." — expand $VAR but not globs
 	CmdSubst                         // $(cmd) or `cmd` in unquoted context
 	CmdSubstDQ                       // $(cmd) or `cmd` inside double quotes
+	ArithSubst                       // $(( expr )) in unquoted context
+	ArithSubstDQ                     // $(( expr )) inside double quotes
 )
 
 // WordPart is a fragment of a word with a uniform quoting context.
@@ -380,13 +382,25 @@ func (l *lexer) readWord() (Word, error) {
 
 		case ch == '$' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '(':
 			flushUnquoted()
-			l.next() // consume $
-			l.next() // consume (
-			cmd, err := l.readCmdSubst()
-			if err != nil {
-				return nil, err
+			if l.pos+2 < len(l.input) && l.input[l.pos+2] == '(' {
+				// $(( — arithmetic substitution
+				l.next() // consume $
+				l.next() // consume first (
+				l.next() // consume second (
+				expr, err := l.readArithSubst()
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, WordPart{Text: expr, Quote: ArithSubst})
+			} else {
+				l.next() // consume $
+				l.next() // consume (
+				cmd, err := l.readCmdSubst()
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
 			}
-			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
 
 		case isOperator(ch) || ch == ' ' || ch == '\t' || ch == '\n':
 			goto done
@@ -476,9 +490,21 @@ func (l *lexer) readDoubleQuote() ([]WordPart, error) {
 			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubstDQ})
 
 		default:
-			// Check for $( command substitution.
+			// Check for $(( arithmetic or $( command substitution.
 			if ch == '$' {
 				if next, ok := l.peek(); ok && next == '(' {
+					if l.pos+1 < len(l.input) && l.input[l.pos+1] == '(' {
+						// $(( — arithmetic substitution
+						flush()
+						l.next() // consume first (
+						l.next() // consume second (
+						expr, err := l.readArithSubst()
+						if err != nil {
+							return nil, err
+						}
+						parts = append(parts, WordPart{Text: expr, Quote: ArithSubstDQ})
+						continue
+					}
 					flush()
 					l.next() // consume (
 					cmd, err := l.readCmdSubst()
@@ -590,6 +616,46 @@ func (l *lexer) readBacktick() (string, error) {
 			continue
 		}
 		buf = append(buf, ch)
+	}
+}
+
+// readArithSubst reads a $((...)) arithmetic substitution. The $((
+// has already been consumed. Reads until the matching )), counting
+// nested parentheses.
+func (l *lexer) readArithSubst() (string, error) {
+	depth := 1 // we've consumed one (( so we need one ))
+	var buf []rune
+
+	for {
+		ch, ok := l.next()
+		if !ok {
+			return "", fmt.Errorf("unterminated arithmetic substitution")
+		}
+
+		if ch == '(' {
+			// Check for ((
+			if next, ok := l.peek(); ok && next == '(' {
+				l.next()
+				depth++
+				buf = append(buf, '(', '(')
+				continue
+			}
+			buf = append(buf, ch)
+		} else if ch == ')' {
+			if next, ok := l.peek(); ok && next == ')' {
+				depth--
+				if depth == 0 {
+					l.next() // consume the second )
+					return string(buf), nil
+				}
+				l.next()
+				buf = append(buf, ')', ')')
+			} else {
+				buf = append(buf, ch)
+			}
+		} else {
+			buf = append(buf, ch)
+		}
 	}
 }
 

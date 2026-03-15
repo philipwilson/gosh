@@ -501,6 +501,59 @@ func expectWordVal(t *testing.T, tokens []Token, idx int, val string) {
 	}
 }
 
+func TestArithSubstSimple(t *testing.T) {
+	tokens, err := Lex("echo $((1+2))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "1+2")
+	expectParts(t, tokens[1].Parts,
+		WordPart{Text: "1+2", Quote: ArithSubst},
+	)
+}
+
+func TestArithSubstWithSpaces(t *testing.T) {
+	tokens, err := Lex("echo $(( x + 1 ))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", " x + 1 ")
+	expectParts(t, tokens[1].Parts,
+		WordPart{Text: " x + 1 ", Quote: ArithSubst},
+	)
+}
+
+func TestArithSubstInDoubleQuotes(t *testing.T) {
+	tokens, err := Lex(`echo "result: $((3*4))"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "result: 3*4")
+	expectParts(t, tokens[1].Parts,
+		WordPart{Text: "result: ", Quote: DoubleQuoted},
+		WordPart{Text: "3*4", Quote: ArithSubstDQ},
+	)
+}
+
+func TestArithSubstMixedWithText(t *testing.T) {
+	tokens, err := Lex("count=$((1+2))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "count=1+2")
+	expectParts(t, tokens[0].Parts,
+		WordPart{Text: "count=", Quote: Unquoted},
+		WordPart{Text: "1+2", Quote: ArithSubst},
+	)
+}
+
+func TestArithSubstUnterminated(t *testing.T) {
+	_, err := Lex("echo $((1+2)")
+	if err == nil {
+		t.Fatal("expected error for unterminated arithmetic substitution")
+	}
+}
+
 func expectParts(t *testing.T, got Word, want ...WordPart) {
 	t.Helper()
 	if len(got) != len(want) {

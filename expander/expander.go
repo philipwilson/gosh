@@ -31,6 +31,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -82,7 +83,18 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc) {
 		cmd.Redirects[i].File = expandTilde(cmd.Redirects[i].File, lookup)
 	}
 
-	// Phase 2: command substitution on all words.
+	// Phase 2a: arithmetic substitution on all words.
+	for i := range cmd.Assigns {
+		cmd.Assigns[i].Value = expandArithInWord(cmd.Assigns[i].Value, lookup)
+	}
+	for i := range cmd.Args {
+		cmd.Args[i] = expandArithInWord(cmd.Args[i], lookup)
+	}
+	for i := range cmd.Redirects {
+		cmd.Redirects[i].File = expandArithInWord(cmd.Redirects[i].File, lookup)
+	}
+
+	// Phase 2b: command substitution on all words.
 	if subst != nil {
 		for i := range cmd.Assigns {
 			cmd.Assigns[i].Value = expandCmdSubstInWord(cmd.Assigns[i].Value, subst)
@@ -161,6 +173,35 @@ func expandTilde(w lexer.Word, lookup LookupFunc) lexer.Word {
 	result := make(lexer.Word, 0, len(w))
 	result = append(result, lexer.WordPart{Text: expanded, Quote: lexer.Unquoted})
 	result = append(result, w[1:]...)
+	return result
+}
+
+// expandArithInWord replaces ArithSubst and ArithSubstDQ parts with
+// the result of evaluating the arithmetic expression.
+func expandArithInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
+	var result lexer.Word
+
+	for _, part := range w {
+		if part.Quote != lexer.ArithSubst && part.Quote != lexer.ArithSubstDQ {
+			result = append(result, part)
+			continue
+		}
+
+		val, err := evalArith(part.Text, lookup)
+		text := "0"
+		if err == nil {
+			text = strconv.FormatInt(val, 10)
+		}
+
+		// ArithSubst (unquoted) → result is Unquoted (subject to globs).
+		// ArithSubstDQ (double-quoted) → result is DoubleQuoted (no globs).
+		quote := lexer.Unquoted
+		if part.Quote == lexer.ArithSubstDQ {
+			quote = lexer.DoubleQuoted
+		}
+		result = append(result, lexer.WordPart{Text: text, Quote: quote})
+	}
+
 	return result
 }
 

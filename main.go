@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"gosh/editor"
 	"gosh/lexer"
@@ -58,6 +59,14 @@ func newShellState() *shellState {
 			s.vars[k] = v
 			s.exported[k] = true
 		}
+	}
+
+	// Set default PS1 and PS2 if not inherited from environment.
+	if _, ok := s.vars["PS1"]; !ok {
+		s.vars["PS1"] = `\u@\h:\w\$ `
+	}
+	if _, ok := s.vars["PS2"]; !ok {
+		s.vars["PS2"] = "> "
 	}
 
 	s.interactive = isatty(s.termFd)
@@ -130,6 +139,96 @@ func (s *shellState) exportVar(name string) {
 func (s *shellState) unsetVar(name string) {
 	delete(s.vars, name)
 	delete(s.exported, name)
+}
+
+// formatPrompt expands bash-style backslash escapes in a prompt string
+// (PS1/PS2). Supported sequences:
+//
+//	\u  — username ($USER)
+//	\h  — hostname up to first '.'
+//	\H  — full hostname
+//	\w  — current working directory, with $HOME replaced by ~
+//	\W  — basename of current working directory (~ if $HOME)
+//	\$  — '#' if uid 0, '$' otherwise
+//	\n  — newline
+//	\t  — time in 24-hour HH:MM:SS
+//	\e  — escape character (ASCII 27, for ANSI color codes)
+//	\\  — literal backslash
+//	\[  — begin non-printing sequence (ignored — terminal handles it)
+//	\]  — end non-printing sequence (ignored — terminal handles it)
+func (s *shellState) formatPrompt(raw string) string {
+	var sb strings.Builder
+	sb.Grow(len(raw))
+
+	i := 0
+	for i < len(raw) {
+		if raw[i] != '\\' || i+1 >= len(raw) {
+			sb.WriteByte(raw[i])
+			i++
+			continue
+		}
+
+		i++ // skip backslash
+		switch raw[i] {
+		case 'u':
+			sb.WriteString(s.vars["USER"])
+		case 'h':
+			host, _ := os.Hostname()
+			if idx := strings.IndexByte(host, '.'); idx >= 0 {
+				host = host[:idx]
+			}
+			sb.WriteString(host)
+		case 'H':
+			host, _ := os.Hostname()
+			sb.WriteString(host)
+		case 'w':
+			cwd := s.vars["PWD"]
+			if cwd == "" {
+				cwd, _ = os.Getwd()
+			}
+			home := s.vars["HOME"]
+			if home != "" && (cwd == home || strings.HasPrefix(cwd, home+"/")) {
+				cwd = "~" + cwd[len(home):]
+			}
+			sb.WriteString(cwd)
+		case 'W':
+			cwd := s.vars["PWD"]
+			if cwd == "" {
+				cwd, _ = os.Getwd()
+			}
+			home := s.vars["HOME"]
+			if cwd == home {
+				sb.WriteByte('~')
+			} else {
+				sb.WriteString(filepath.Base(cwd))
+			}
+		case '$':
+			if os.Getuid() == 0 {
+				sb.WriteByte('#')
+			} else {
+				sb.WriteByte('$')
+			}
+		case 'n':
+			sb.WriteByte('\n')
+		case 't':
+			now := time.Now()
+			fmt.Fprintf(&sb, "%02d:%02d:%02d", now.Hour(), now.Minute(), now.Second())
+		case 'e':
+			sb.WriteByte(0x1b)
+		case '[', ']':
+			// Non-printing markers — ignored since our editor handles
+			// ANSI escapes correctly via relative cursor positioning.
+		case '\\':
+			sb.WriteByte('\\')
+		default:
+			// Unknown escape — keep as-is.
+			sb.WriteByte('\\')
+			sb.WriteByte(raw[i])
+		}
+		i++
+	}
+
+	return sb.String()
 }
 
 // cmdSubst executes a command string and returns its stdout output
@@ -253,7 +352,8 @@ func runScript(state *shellState, path string) int {
 func runInteractive(state *shellState) {
 	for {
 		state.reapJobs()
-		line, err := state.ed.ReadLine("gosh$ ")
+		prompt := state.formatPrompt(state.vars["PS1"])
+		line, err := state.ed.ReadLine(prompt)
 		if err == io.EOF {
 			fmt.Fprintln(os.Stderr)
 			break
@@ -270,7 +370,8 @@ func runInteractive(state *shellState) {
 
 		// Collect continuation lines for incomplete input.
 		for needsMore(line) {
-			more, err := state.ed.ReadLine("> ")
+			ps2 := state.formatPrompt(state.vars["PS2"])
+			more, err := state.ed.ReadLine(ps2)
 			if err == io.EOF {
 				fmt.Fprintln(os.Stderr)
 				break
@@ -298,7 +399,7 @@ func runNonInteractive(state *shellState) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		if state.interactive {
-			fmt.Fprintf(os.Stderr, "gosh$ ")
+			fmt.Fprintf(os.Stderr, "%s", state.formatPrompt(state.vars["PS1"]))
 		}
 
 		if !scanner.Scan() {

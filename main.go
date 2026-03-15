@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"gosh/expander"
 	"gosh/lexer"
@@ -15,31 +17,50 @@ import (
 )
 
 // shellState holds the shell's mutable state: variables, export
-// set, and the last command's exit status.
+// set, last exit status, and terminal control info.
 type shellState struct {
-	vars       map[string]string // shell variables
-	exported   map[string]bool   // which variables are exported to children
-	lastStatus int               // $? — exit status of last command
+	vars        map[string]string // shell variables
+	exported    map[string]bool   // which variables are exported to children
+	lastStatus  int               // $? — exit status of last command
+	interactive bool              // true if stdin is a terminal
+	shellPgid   int               // the shell's own process group ID
+	termFd      int               // file descriptor of the controlling terminal
 }
 
 func newShellState() *shellState {
 	s := &shellState{
 		vars:     make(map[string]string),
 		exported: make(map[string]bool),
+		termFd:   int(os.Stdin.Fd()),
 	}
-	// Import all environment variables into the shell's variable
-	// table and mark them as exported.
+
+	// Import all environment variables.
 	for _, entry := range os.Environ() {
 		if k, v, ok := strings.Cut(entry, "="); ok {
 			s.vars[k] = v
 			s.exported[k] = true
 		}
 	}
+
+	// Check if we're running interactively (stdin is a terminal).
+	s.interactive = isatty(s.termFd)
+
+	if s.interactive {
+		s.shellPgid = syscall.Getpgrp()
+
+		// Ignore job-control signals so they go to the foreground
+		// process group, not the shell.
+		//
+		// SIGINT  (Ctrl-C)  — should kill foreground job, not shell
+		// SIGTSTP (Ctrl-Z)  — should stop foreground job, not shell
+		// SIGTTOU           — shell may write to terminal while in
+		//                     background; ignore to prevent stopping
+		signal.Ignore(syscall.SIGINT, syscall.SIGTSTP, syscall.SIGTTOU)
+	}
+
 	return s
 }
 
-// lookup returns the value of a variable, including special
-// variables $? and $$. Returns "" for undefined variables.
 func (s *shellState) lookup(name string) string {
 	switch name {
 	case "?":
@@ -51,8 +72,6 @@ func (s *shellState) lookup(name string) string {
 	}
 }
 
-// environ builds the environment for child processes: all
-// exported variables as KEY=VALUE strings.
 func (s *shellState) environ() []string {
 	var env []string
 	for k := range s.exported {
@@ -61,12 +80,10 @@ func (s *shellState) environ() []string {
 	return env
 }
 
-// setVar sets a shell variable.
 func (s *shellState) setVar(name, value string) {
 	s.vars[name] = value
 }
 
-// exportVar marks a variable for export to child processes.
 func (s *shellState) exportVar(name string) {
 	s.exported[name] = true
 }
@@ -104,9 +121,7 @@ func main() {
 			continue
 		}
 
-		// Expand variables in the AST.
 		expander.Expand(list, state.lookup)
-
 		execList(state, list)
 	}
 }
@@ -117,6 +132,10 @@ func execList(state *shellState, list *parser.List) {
 	}
 }
 
+// execPipeline runs a pipeline, placing all its processes in a
+// single process group. If interactive, the pipeline's process
+// group is given the terminal (foreground) so that signals like
+// SIGINT are delivered to it, not to the shell.
 func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	n := len(pipe.Cmds)
 
@@ -142,6 +161,11 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	}
 	infos := make([]procInfo, n)
 
+	// pgid for this pipeline: set to 0 for the first process
+	// (creates a new group), then set to the first process's PID
+	// for subsequent processes (they join the group).
+	pgid := 0
+
 	for i, cmd := range pipe.Cmds {
 		var stdin *os.File
 		if i == 0 {
@@ -157,8 +181,20 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 			stdout = pipes[i].w
 		}
 
-		proc, opened := startProcess(state, cmd, stdin, stdout)
+		proc, opened := startProcess(state, cmd, stdin, stdout, pgid)
 		infos[i] = procInfo{proc: proc, files: opened}
+
+		if i == 0 && proc != nil {
+			pgid = proc.Pid
+			// Also call setpgid from the parent to avoid a race
+			// between the parent and child.
+			syscall.Setpgid(proc.Pid, proc.Pid)
+
+			// Give the pipeline's process group the terminal.
+			if state.interactive {
+				tcsetpgrp(state.termFd, pgid)
+			}
+		}
 	}
 
 	for _, p := range pipes {
@@ -178,6 +214,11 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 			state.lastStatus = status
 		}
 	}
+
+	// Take back the terminal for the shell.
+	if state.interactive {
+		tcsetpgrp(state.termFd, state.shellPgid)
+	}
 }
 
 // execSimple runs a single command. Returns exit status.
@@ -196,19 +237,32 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		return builtinExport(state, args[1:])
 	}
 
-	proc, opened := startProcess(state, cmd, stdin, stdout)
+	proc, opened := startProcess(state, cmd, stdin, stdout, 0)
 	if proc == nil {
-		return 127 // command not found
+		return 127
+	}
+
+	pgid := proc.Pid
+	syscall.Setpgid(pgid, pgid)
+
+	// Give the child's process group the terminal.
+	if state.interactive {
+		tcsetpgrp(state.termFd, pgid)
 	}
 
 	status := waitProc(proc)
 	for _, f := range opened {
 		f.Close()
 	}
+
+	// Take back the terminal.
+	if state.interactive {
+		tcsetpgrp(state.termFd, state.shellPgid)
+	}
+
 	return status
 }
 
-// builtinExport handles "export VAR" and "export VAR=VALUE".
 func builtinExport(state *shellState, args []string) int {
 	for _, arg := range args {
 		if name, value, ok := strings.Cut(arg, "="); ok {
@@ -266,7 +320,10 @@ func applyRedirects(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.File, *o
 	return stdin, stdout, opened, nil
 }
 
-func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.Process, []*os.File) {
+// startProcess resolves a command, applies redirections, and starts
+// the process in the given process group. pgid=0 means create a new
+// process group; pgid>0 means join that existing group.
+func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File, pgid int) (*os.Process, []*os.File) {
 	args := cmd.ArgStrings()
 	if len(args) == 0 {
 		return nil, nil
@@ -284,8 +341,6 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.Fi
 		return nil, nil
 	}
 
-	// Build environment: start with exported vars, then add
-	// any per-command assignments.
 	env := state.environ()
 	for _, a := range cmd.Assigns {
 		env = append(env, a.Name+"="+a.Value.String())
@@ -294,7 +349,10 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.Fi
 	proc, err := os.StartProcess(path, args, &os.ProcAttr{
 		Env:   env,
 		Files: []*os.File{stdin, stdout, os.Stderr},
-		Sys:   &syscall.SysProcAttr{},
+		Sys: &syscall.SysProcAttr{
+			Setpgid: true,
+			Pgid:    pgid,
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", args[0], err)
@@ -307,6 +365,8 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.Fi
 }
 
 // waitProc waits for a process and returns its exit status.
+// If the process was killed by a signal, the exit status is
+// 128 + signal number (bash convention).
 func waitProc(proc *os.Process) int {
 	ps, err := proc.Wait()
 	if err != nil {
@@ -314,10 +374,46 @@ func waitProc(proc *os.Process) int {
 		return 1
 	}
 	if status, ok := ps.Sys().(syscall.WaitStatus); ok {
+		if status.Signaled() {
+			return 128 + int(status.Signal())
+		}
 		return status.ExitStatus()
 	}
 	if ps.Success() {
 		return 0
 	}
 	return 1
+}
+
+// --- Terminal control ---
+
+// isatty returns true if the file descriptor refers to a terminal.
+// We probe with TIOCGPGRP (get terminal foreground process group):
+// if the ioctl succeeds, the fd is a terminal. This works on both
+// Darwin and Linux, unlike TIOCGETA which is Darwin-only.
+func isatty(fd int) bool {
+	var pgrp int
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(syscall.TIOCGPGRP),
+		uintptr(unsafe.Pointer(&pgrp)),
+	)
+	return errno == 0
+}
+
+// tcsetpgrp sets the foreground process group of the terminal.
+// This controls which process group receives keyboard signals
+// (SIGINT from Ctrl-C, SIGTSTP from Ctrl-Z).
+func tcsetpgrp(fd int, pgid int) error {
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(syscall.TIOCSPGRP),
+		uintptr(unsafe.Pointer(&pgid)),
+	)
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }

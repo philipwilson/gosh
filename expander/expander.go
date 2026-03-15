@@ -1,19 +1,28 @@
-// Package expander performs variable and glob expansion on the AST.
+// Package expander performs variable, command substitution, and glob
+// expansion on the AST.
 //
-// Variable expansion: walks each word and expands $VAR and ${VAR}
-// references using a caller-provided lookup function. Expansion
-// follows bash quoting rules:
+// Expansion phases (in order):
+//
+//  1. Tilde expansion: ~ → $HOME, ~user → user's home dir
+//  2. Command substitution: $(cmd) and `cmd` → output of cmd
+//  3. Variable expansion: $VAR, ${VAR}, $?, $$
+//  4. Glob expansion: *, ?, [...] on unquoted args
+//
+// Variable expansion follows bash quoting rules:
 //
 //   - Unquoted text: $VAR is expanded
 //   - Double-quoted text: $VAR is expanded
 //   - Single-quoted text: no expansion (literal)
 //   - Backslash-escaped $: no expansion (lexer marks it SingleQuoted)
 //
+// Command substitution: the inner command is executed via a caller-
+// provided SubstFunc callback, which runs the full lex→parse→expand→
+// execute pipeline recursively. The result replaces the substitution,
+// with trailing newlines stripped (matching bash behavior).
+//
 // Glob expansion: expands unquoted *, ?, and [...] patterns using
 // filepath.Glob. Quoted glob characters are literal. If a pattern
 // matches no files, the word is kept as-is (bash default).
-//
-// Special variables: $? (last exit status), $$ (shell PID).
 package expander
 
 import (
@@ -29,21 +38,26 @@ import (
 // return "" for undefined variables (matching bash default behavior).
 type LookupFunc func(name string) string
 
-// Expand walks the AST and expands variable references, then
-// expands glob patterns. It modifies the AST in place.
-func Expand(list *parser.List, lookup LookupFunc) {
+// SubstFunc executes a command string and returns its stdout output.
+// It should strip trailing newlines from the result. May be nil if
+// command substitution is not needed (e.g., in tests).
+type SubstFunc func(cmd string) (string, error)
+
+// Expand walks the AST and performs all expansion phases.
+// It modifies the AST in place.
+func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc) {
 	for i := range list.Entries {
-		expandPipeline(list.Entries[i].Pipeline, lookup)
+		expandPipeline(list.Entries[i].Pipeline, lookup, subst)
 	}
 }
 
-func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc) {
+func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
 	for _, cmd := range pipe.Cmds {
-		expandCommand(cmd, lookup)
+		expandCommand(cmd, lookup, subst)
 	}
 }
 
-func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc) {
+func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc) {
 	// Phase 1: tilde expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandTilde(cmd.Assigns[i].Value, lookup)
@@ -55,7 +69,20 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc) {
 		cmd.Redirects[i].File = expandTilde(cmd.Redirects[i].File, lookup)
 	}
 
-	// Phase 2: variable expansion on all words.
+	// Phase 2: command substitution on all words.
+	if subst != nil {
+		for i := range cmd.Assigns {
+			cmd.Assigns[i].Value = expandCmdSubstInWord(cmd.Assigns[i].Value, subst)
+		}
+		for i := range cmd.Args {
+			cmd.Args[i] = expandCmdSubstInWord(cmd.Args[i], subst)
+		}
+		for i := range cmd.Redirects {
+			cmd.Redirects[i].File = expandCmdSubstInWord(cmd.Redirects[i].File, subst)
+		}
+	}
+
+	// Phase 3: variable expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup)
 	}
@@ -66,7 +93,7 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc) {
 		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup)
 	}
 
-	// Phase 3: glob expansion on args only.
+	// Phase 4: glob expansion on args only.
 	cmd.Args = expandGlobsInArgs(cmd.Args)
 }
 
@@ -121,6 +148,36 @@ func expandTilde(w lexer.Word, lookup LookupFunc) lexer.Word {
 	result := make(lexer.Word, 0, len(w))
 	result = append(result, lexer.WordPart{Text: expanded, Quote: lexer.Unquoted})
 	result = append(result, w[1:]...)
+	return result
+}
+
+// expandCmdSubstInWord replaces CmdSubst and CmdSubstDQ parts with
+// the output of running the command. CmdSubst results are Unquoted
+// (subject to glob expansion), CmdSubstDQ results are DoubleQuoted
+// (not subject to glob expansion).
+func expandCmdSubstInWord(w lexer.Word, subst SubstFunc) lexer.Word {
+	var result lexer.Word
+
+	for _, part := range w {
+		if part.Quote != lexer.CmdSubst && part.Quote != lexer.CmdSubstDQ {
+			result = append(result, part)
+			continue
+		}
+
+		output, err := subst(part.Text)
+		if err != nil {
+			output = ""
+		}
+
+		// CmdSubst (unquoted) → result is Unquoted (subject to globs).
+		// CmdSubstDQ (double-quoted) → result is DoubleQuoted (no globs).
+		quote := lexer.Unquoted
+		if part.Quote == lexer.CmdSubstDQ {
+			quote = lexer.DoubleQuoted
+		}
+		result = append(result, lexer.WordPart{Text: output, Quote: quote})
+	}
+
 	return result
 }
 

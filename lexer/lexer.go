@@ -13,6 +13,10 @@
 //   - Backslash (outside quotes): escapes the immediately following
 //     character, making it literal.
 //
+// Command substitution: $(cmd) and `cmd` are recognized in unquoted
+// and double-quoted contexts. The inner command text is stored as a
+// CmdSubst or CmdSubstDQ word part for the expander to execute.
+//
 // Operator tokens (|, <, >, >>, ;, &&, ||) are recognized only in
 // unquoted context. Whitespace separates tokens only when unquoted.
 //
@@ -40,6 +44,8 @@ const (
 	Unquoted     QuoteContext = iota // bare text — expand $VAR and globs
 	SingleQuoted                     // inside '...' or after \ — fully literal
 	DoubleQuoted                     // inside "..." — expand $VAR but not globs
+	CmdSubst                         // $(cmd) or `cmd` in unquoted context
+	CmdSubstDQ                       // $(cmd) or `cmd` inside double quotes
 )
 
 // WordPart is a fragment of a word with a uniform quoting context.
@@ -295,6 +301,7 @@ func (l *lexer) skipSpaces() {
 //   - single-quoted strings
 //   - double-quoted strings
 //   - backslash-escaped characters
+//   - command substitutions: $(cmd) or `cmd`
 //
 // These can be freely mixed: he"ll"o → hello
 func (l *lexer) readWord() (Word, error) {
@@ -342,6 +349,25 @@ func (l *lexer) readWord() (Word, error) {
 			// Backslash-escaped characters are fully literal,
 			// marked as SingleQuoted to suppress expansion.
 			parts = append(parts, WordPart{Text: string(esc), Quote: SingleQuoted})
+
+		case ch == '`':
+			flushUnquoted()
+			l.next() // consume opening `
+			cmd, err := l.readBacktick()
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
+
+		case ch == '$' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '(':
+			flushUnquoted()
+			l.next() // consume $
+			l.next() // consume (
+			cmd, err := l.readCmdSubst()
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
 
 		case isOperator(ch) || ch == ' ' || ch == '\t':
 			goto done
@@ -422,9 +448,129 @@ func (l *lexer) readDoubleQuote() ([]WordPart, error) {
 				buf = append(buf, '\\', esc)
 			}
 
+		case '`':
+			flush()
+			cmd, err := l.readBacktick()
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubstDQ})
+
+		default:
+			// Check for $( command substitution.
+			if ch == '$' {
+				if next, ok := l.peek(); ok && next == '(' {
+					flush()
+					l.next() // consume (
+					cmd, err := l.readCmdSubst()
+					if err != nil {
+						return nil, err
+					}
+					parts = append(parts, WordPart{Text: cmd, Quote: CmdSubstDQ})
+					continue
+				}
+			}
+			buf = append(buf, ch)
+		}
+	}
+}
+
+// readCmdSubst reads a $(...) command substitution. The $( has already
+// been consumed. Reads until the matching ), respecting nested parens
+// and quoting inside the substitution.
+func (l *lexer) readCmdSubst() (string, error) {
+	depth := 1
+	var buf []rune
+
+	for depth > 0 {
+		ch, ok := l.next()
+		if !ok {
+			return "", fmt.Errorf("unterminated command substitution")
+		}
+
+		switch ch {
+		case '(':
+			depth++
+			buf = append(buf, ch)
+		case ')':
+			depth--
+			if depth > 0 {
+				buf = append(buf, ch)
+			}
+		case '\'':
+			// Single-quoted string inside substitution.
+			buf = append(buf, ch)
+			for {
+				c, ok := l.next()
+				if !ok {
+					return "", fmt.Errorf("unterminated single quote in command substitution")
+				}
+				buf = append(buf, c)
+				if c == '\'' {
+					break
+				}
+			}
+		case '"':
+			// Double-quoted string inside substitution.
+			buf = append(buf, ch)
+			for {
+				c, ok := l.next()
+				if !ok {
+					return "", fmt.Errorf("unterminated double quote in command substitution")
+				}
+				buf = append(buf, c)
+				if c == '"' {
+					break
+				}
+				if c == '\\' {
+					esc, ok := l.next()
+					if !ok {
+						return "", fmt.Errorf("unterminated double quote in command substitution")
+					}
+					buf = append(buf, esc)
+				}
+			}
+		case '\\':
+			esc, ok := l.next()
+			if !ok {
+				return "", fmt.Errorf("unexpected end of input in command substitution")
+			}
+			buf = append(buf, ch, esc)
 		default:
 			buf = append(buf, ch)
 		}
+	}
+
+	return string(buf), nil
+}
+
+// readBacktick reads a `...` command substitution. The opening
+// backtick has already been consumed. Inside backticks, only \` \\
+// and \$ are special escape sequences.
+func (l *lexer) readBacktick() (string, error) {
+	var buf []rune
+
+	for {
+		ch, ok := l.next()
+		if !ok {
+			return "", fmt.Errorf("unterminated backtick")
+		}
+		if ch == '`' {
+			return string(buf), nil
+		}
+		if ch == '\\' {
+			esc, ok := l.next()
+			if !ok {
+				return "", fmt.Errorf("unexpected end of input in backtick")
+			}
+			if esc == '`' || esc == '\\' || esc == '$' {
+				buf = append(buf, esc)
+			} else {
+				buf = append(buf, '\\', esc)
+			}
+			continue
+		}
+		buf = append(buf, ch)
 	}
 }
 

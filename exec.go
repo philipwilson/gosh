@@ -120,6 +120,80 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	}
 }
 
+// execPipelineSubst runs a pipeline with stdout redirected to the given
+// writer. Used by command substitution to capture output.
+func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File) {
+	n := len(pipe.Cmds)
+
+	if n == 1 {
+		state.lastStatus = execSimple(state, pipe.Cmds[0], os.Stdin, stdout)
+		return
+	}
+
+	// Multi-stage pipeline: same logic as execPipeline but the last
+	// stage writes to the provided stdout instead of os.Stdout.
+	type pipePair struct{ r, w *os.File }
+	pipes := make([]pipePair, n-1)
+	for i := range pipes {
+		r, w, err := os.Pipe()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: pipe: %v\n", err)
+			return
+		}
+		pipes[i] = pipePair{r, w}
+	}
+
+	type procInfo struct {
+		proc  *os.Process
+		files []*os.File
+	}
+	infos := make([]procInfo, n)
+	pgid := 0
+
+	for i, cmd := range pipe.Cmds {
+		var sin *os.File
+		if i == 0 {
+			sin = os.Stdin
+		} else {
+			sin = pipes[i-1].r
+		}
+
+		var sout *os.File
+		if i == n-1 {
+			sout = stdout
+		} else {
+			sout = pipes[i].w
+		}
+
+		fds := [3]*os.File{sin, sout, os.Stderr}
+		proc, opened := startProcess(state, cmd, fds, pgid)
+		infos[i] = procInfo{proc: proc, files: opened}
+
+		if i == 0 && proc != nil {
+			pgid = proc.Pid
+			syscall.Setpgid(proc.Pid, proc.Pid)
+		}
+	}
+
+	for _, p := range pipes {
+		p.r.Close()
+		p.w.Close()
+	}
+
+	for i, info := range infos {
+		if info.proc == nil {
+			continue
+		}
+		status := waitProc(info.proc)
+		for _, f := range info.files {
+			f.Close()
+		}
+		if i == n-1 {
+			state.lastStatus = status
+		}
+	}
+}
+
 // execSimple runs a single command (not in a pipeline).
 // Builtins are handled here; in pipelines they fall through
 // to external commands.

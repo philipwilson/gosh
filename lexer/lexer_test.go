@@ -386,6 +386,82 @@ func TestComplexRedirects(t *testing.T) {
 	}
 }
 
+// --- Command substitution tests ---
+
+func TestCmdSubstDollarParen(t *testing.T) {
+	tokens, err := Lex("echo $(whoami)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "whoami")
+	expectParts(t, tokens[1].Parts, WordPart{"whoami", CmdSubst})
+}
+
+func TestCmdSubstBacktick(t *testing.T) {
+	tokens, err := Lex("echo `whoami`")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "whoami")
+	expectParts(t, tokens[1].Parts, WordPart{"whoami", CmdSubst})
+}
+
+func TestCmdSubstInDoubleQuotes(t *testing.T) {
+	tokens, err := Lex(`echo "hello $(whoami)"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectParts(t, tokens[1].Parts,
+		WordPart{"hello ", DoubleQuoted},
+		WordPart{"whoami", CmdSubstDQ},
+	)
+}
+
+func TestCmdSubstBacktickInDoubleQuotes(t *testing.T) {
+	tokens, err := Lex("echo \"hello `whoami`\"")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectParts(t, tokens[1].Parts,
+		WordPart{"hello ", DoubleQuoted},
+		WordPart{"whoami", CmdSubstDQ},
+	)
+}
+
+func TestCmdSubstNested(t *testing.T) {
+	tokens, err := Lex("echo $(echo $(whoami))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectParts(t, tokens[1].Parts, WordPart{"echo $(whoami)", CmdSubst})
+}
+
+func TestCmdSubstMixedWithText(t *testing.T) {
+	tokens, err := Lex("echo pre$(whoami)post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectParts(t, tokens[1].Parts,
+		WordPart{"pre", Unquoted},
+		WordPart{"whoami", CmdSubst},
+		WordPart{"post", Unquoted},
+	)
+}
+
+func TestCmdSubstUnterminated(t *testing.T) {
+	_, err := Lex("echo $(whoami")
+	if err == nil {
+		t.Fatal("expected error for unterminated $(")
+	}
+}
+
+func TestBacktickUnterminated(t *testing.T) {
+	_, err := Lex("echo `whoami")
+	if err == nil {
+		t.Fatal("expected error for unterminated backtick")
+	}
+}
+
 // --- helpers ---
 
 func expectWords(t *testing.T, tokens []Token, words ...string) {

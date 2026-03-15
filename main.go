@@ -89,6 +89,49 @@ func (s *shellState) unsetVar(name string) {
 	delete(s.exported, name)
 }
 
+// cmdSubst executes a command string and returns its stdout output
+// with trailing newlines stripped. Used for $(cmd) and `cmd` expansion.
+func (s *shellState) cmdSubst(cmd string) (string, error) {
+	tokens, err := lexer.Lex(cmd)
+	if err != nil {
+		return "", err
+	}
+	if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
+		return "", nil
+	}
+
+	list, err := parser.Parse(tokens)
+	if err != nil {
+		return "", err
+	}
+
+	expander.Expand(list, s.lookup, s.cmdSubst)
+
+	// Create a pipe to capture stdout.
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+
+	// Execute the command with stdout directed to the pipe.
+	oldStatus := s.lastStatus
+	for _, entry := range list.Entries {
+		execPipelineSubst(s, entry.Pipeline, w)
+	}
+	w.Close()
+
+	// Read all output from the pipe.
+	out, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		s.lastStatus = oldStatus
+		return "", err
+	}
+
+	// Strip trailing newlines (bash behavior).
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
 // --- Main loop ---
 
 func main() {
@@ -194,7 +237,7 @@ func runLine(state *shellState, line string) bool {
 		fmt.Fprintf(os.Stderr, "  %s\n", list)
 	}
 
-	expander.Expand(list, state.lookup)
+	expander.Expand(list, state.lookup, state.cmdSubst)
 
 	if state.debugExpanded {
 		fmt.Fprintf(os.Stderr, "  %s\n", list)

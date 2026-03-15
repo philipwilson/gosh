@@ -513,6 +513,93 @@ func simpleCmd(t *testing.T, cmd Command) *SimpleCmd {
 	return sc
 }
 
+func TestCaseSimple(t *testing.T) {
+	list := mustParse(t, "case x in\nfoo) echo yes;;\nesac")
+	pipe := list.Entries[0].Pipeline
+	cmd, ok := pipe.Cmds[0].(*CaseCmd)
+	if !ok {
+		t.Fatalf("expected *CaseCmd, got %T", pipe.Cmds[0])
+	}
+	if cmd.Word.String() != "x" {
+		t.Errorf("expected word 'x', got %q", cmd.Word.String())
+	}
+	if len(cmd.Clauses) != 1 {
+		t.Fatalf("expected 1 clause, got %d", len(cmd.Clauses))
+	}
+	cl := cmd.Clauses[0]
+	if len(cl.Patterns) != 1 || cl.Patterns[0].String() != "foo" {
+		t.Errorf("expected pattern 'foo', got %v", cl.Patterns)
+	}
+	if len(cl.Body.Entries) != 1 {
+		t.Errorf("expected 1 body entry, got %d", len(cl.Body.Entries))
+	}
+}
+
+func TestCaseMultiplePatterns(t *testing.T) {
+	list := mustParse(t, "case x in\na | b | c) echo match;;\nesac")
+	cmd, ok := list.Entries[0].Pipeline.Cmds[0].(*CaseCmd)
+	if !ok {
+		t.Fatalf("expected *CaseCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if len(cmd.Clauses) != 1 {
+		t.Fatalf("expected 1 clause, got %d", len(cmd.Clauses))
+	}
+	cl := cmd.Clauses[0]
+	if len(cl.Patterns) != 3 {
+		t.Fatalf("expected 3 patterns, got %d", len(cl.Patterns))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if cl.Patterns[i].String() != want {
+			t.Errorf("pattern %d: expected %q, got %q", i, want, cl.Patterns[i].String())
+		}
+	}
+}
+
+func TestCaseMultipleClauses(t *testing.T) {
+	list := mustParse(t, "case x in\nfoo) echo a;;\nbar) echo b;;\n*) echo c;;\nesac")
+	cmd, ok := list.Entries[0].Pipeline.Cmds[0].(*CaseCmd)
+	if !ok {
+		t.Fatalf("expected *CaseCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if len(cmd.Clauses) != 3 {
+		t.Fatalf("expected 3 clauses, got %d", len(cmd.Clauses))
+	}
+}
+
+func TestCaseLastClauseNoSemi(t *testing.T) {
+	// Last clause before esac doesn't need ;;
+	list := mustParse(t, "case x in\nfoo) echo yes\nesac")
+	cmd, ok := list.Entries[0].Pipeline.Cmds[0].(*CaseCmd)
+	if !ok {
+		t.Fatalf("expected *CaseCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if len(cmd.Clauses) != 1 {
+		t.Fatalf("expected 1 clause, got %d", len(cmd.Clauses))
+	}
+}
+
+func TestCaseMissingEsac(t *testing.T) {
+	tokens, err := lexer.Lex("case x in\nfoo) echo yes;;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'esac'")
+	}
+}
+
+func TestCaseMissingIn(t *testing.T) {
+	tokens, err := lexer.Lex("case x\nfoo) echo yes;;\nesac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'in'")
+	}
+}
+
 func expectArgs(t *testing.T, cmd Command, want ...string) {
 	t.Helper()
 	sc := simpleCmd(t, cmd)

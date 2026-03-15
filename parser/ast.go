@@ -224,6 +224,22 @@ func cloneCommand(c Command) Command {
 			Words:   words,
 			Body:    CloneList(c.Body),
 		}
+	case *CaseCmd:
+		clauses := make([]CaseClause, len(c.Clauses))
+		for i, cl := range c.Clauses {
+			pats := make([]lexer.Word, len(cl.Patterns))
+			for j, p := range cl.Patterns {
+				pats[j] = CloneWord(p)
+			}
+			clauses[i] = CaseClause{
+				Patterns: pats,
+				Body:     CloneList(cl.Body),
+			}
+		}
+		return &CaseCmd{
+			Word:    CloneWord(c.Word),
+			Clauses: clauses,
+		}
 	default:
 		return c
 	}
@@ -306,6 +322,34 @@ func (c *ForCmd) String() string {
 		words = append(words, w.String())
 	}
 	return "For[" + c.VarName + " in " + strings.Join(words, " ") + " body=" + c.Body.String() + "]"
+}
+
+// --- CaseCmd ---
+
+// CaseClause is one pattern-list + body pair in a case statement.
+type CaseClause struct {
+	Patterns []lexer.Word // one or more patterns (separated by | in input)
+	Body     *List
+}
+
+// CaseCmd represents: case word in (pattern) list ;; ... esac
+type CaseCmd struct {
+	Word    lexer.Word   // the word being matched
+	Clauses []CaseClause
+}
+
+func (c *CaseCmd) node()    {}
+func (c *CaseCmd) command() {}
+func (c *CaseCmd) String() string {
+	s := "Case[" + c.Word.String()
+	for _, cl := range c.Clauses {
+		var pats []string
+		for _, p := range cl.Patterns {
+			pats = append(pats, p.String())
+		}
+		s += " (" + strings.Join(pats, "|") + ") " + cl.Body.String()
+	}
+	return s + "]"
 }
 
 func (c *IfCmd) node()    {}

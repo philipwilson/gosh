@@ -12,6 +12,7 @@ import (
 var reservedWords = map[string]bool{
 	"then": true, "elif": true, "else": true, "fi": true,
 	"do": true, "done": true, "in": true,
+	"esac": true,
 }
 
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
@@ -78,7 +79,7 @@ func (p *parser) parseList(stops ...string) (*List, error) {
 	if len(stops) > 0 && p.isStopWord(stops...) {
 		return list, nil
 	}
-	if p.peek().Type == lexer.TOKEN_EOF {
+	if p.peek().Type == lexer.TOKEN_EOF || p.peek().Type == lexer.TOKEN_DSEMI {
 		return list, nil
 	}
 
@@ -99,7 +100,7 @@ func (p *parser) parseList(stops ...string) (*List, error) {
 			op = "||"
 		case lexer.TOKEN_AMP:
 			op = "&"
-		case lexer.TOKEN_EOF:
+		case lexer.TOKEN_EOF, lexer.TOKEN_DSEMI:
 			list.Entries = append(list.Entries, ListEntry{Pipeline: pipeline})
 			return list, nil
 		default:
@@ -117,7 +118,7 @@ func (p *parser) parseList(stops ...string) (*List, error) {
 
 		// Skip extra semicolons (from newlines) and check for end.
 		p.skipSemis()
-		if p.peek().Type == lexer.TOKEN_EOF {
+		if p.peek().Type == lexer.TOKEN_EOF || p.peek().Type == lexer.TOKEN_DSEMI {
 			return list, nil
 		}
 		if len(stops) > 0 && p.isStopWord(stops...) {
@@ -165,6 +166,8 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseWhile()
 		case "for":
 			return p.parseFor()
+		case "case":
+			return p.parseCase()
 		}
 	}
 	return p.parseSimpleCommand()
@@ -302,6 +305,83 @@ func (p *parser) parseFor() (*ForCmd, error) {
 	}
 
 	return &ForCmd{VarName: varName, Words: words, Body: body}, nil
+}
+
+// parseCase parses: 'case' word 'in' (pattern ('|' pattern)* ')' list ';;')* 'esac'
+func (p *parser) parseCase() (*CaseCmd, error) {
+	p.next() // consume "case"
+
+	// Expect the word to match against.
+	tok := p.peek()
+	if tok.Type != lexer.TOKEN_WORD {
+		return nil, fmt.Errorf("expected word after 'case', got %s", tok)
+	}
+	word := tok.Parts
+	p.next()
+
+	// Expect "in".
+	if !p.expectWord("in") {
+		return nil, fmt.Errorf("expected 'in' after 'case %s', got %s", word, p.peek())
+	}
+
+	cmd := &CaseCmd{Word: word}
+
+	// Parse clauses until "esac".
+	for {
+		p.skipSemis()
+
+		if p.peekWord("esac") {
+			break
+		}
+		if p.peek().Type == lexer.TOKEN_EOF {
+			return nil, fmt.Errorf("expected 'esac', got EOF")
+		}
+
+		// Parse one or more patterns separated by |, terminated by ).
+		var patterns []lexer.Word
+		for {
+			tok := p.peek()
+			if tok.Type != lexer.TOKEN_WORD {
+				return nil, fmt.Errorf("expected pattern in 'case', got %s", tok)
+			}
+			patterns = append(patterns, tok.Parts)
+			p.next()
+
+			if p.peek().Type == lexer.TOKEN_RPAREN {
+				p.next() // consume )
+				break
+			}
+			if p.peek().Type == lexer.TOKEN_PIPE {
+				p.next() // consume |
+				continue
+			}
+			return nil, fmt.Errorf("expected '|' or ')' in case pattern, got %s", p.peek())
+		}
+
+		// Parse the body. It ends at ;; or esac.
+		// parseList will stop at "esac" (stop word) or at TOKEN_DSEMI
+		// (not a valid list token, so parseList returns).
+		body, err := p.parseList("esac")
+		if err != nil {
+			return nil, err
+		}
+
+		cmd.Clauses = append(cmd.Clauses, CaseClause{
+			Patterns: patterns,
+			Body:     body,
+		})
+
+		// Consume ;; if present.
+		if p.peek().Type == lexer.TOKEN_DSEMI {
+			p.next()
+		}
+	}
+
+	if !p.expectWord("esac") {
+		return nil, fmt.Errorf("expected 'esac', got %s", p.peek())
+	}
+
+	return cmd, nil
 }
 
 // peekWord returns true if the next token is a WORD with the given value.

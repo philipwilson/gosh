@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -329,6 +330,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execWhile(state, c)
 	case *parser.ForCmd:
 		return execFor(state, c)
+	case *parser.CaseCmd:
+		return execCase(state, c)
 	default:
 		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
 		return 1
@@ -442,6 +445,44 @@ func execFor(state *shellState, cmd *parser.ForCmd) int {
 	}
 
 	return state.lastStatus
+}
+
+// execCase evaluates a case/in/esac command. The word is expanded once,
+// then each clause's patterns are expanded and matched using filepath.Match.
+// The body of the first matching clause is executed.
+func execCase(state *shellState, cmd *parser.CaseCmd) int {
+	// Expand the subject word.
+	word := parser.CloneWord(cmd.Word)
+	tmpCmd := &parser.SimpleCmd{Args: []lexer.Word{word}}
+	expander.Expand(&parser.List{
+		Entries: []parser.ListEntry{{
+			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
+		}},
+	}, state.lookup, state.cmdSubst)
+	subject := tmpCmd.ArgStrings()[0]
+
+	for _, clause := range cmd.Clauses {
+		for _, pat := range clause.Patterns {
+			// Expand variables in the pattern but NOT globs —
+			// glob metacharacters are used for matching, not file expansion.
+			pattern := expander.ExpandWord(parser.CloneWord(pat), state.lookup)
+
+			matched, err := filepath.Match(pattern, subject)
+			if err != nil {
+				continue
+			}
+			if matched {
+				body := parser.CloneList(clause.Body)
+				expander.Expand(body, state.lookup, state.cmdSubst)
+				execList(state, body)
+				return state.lastStatus
+			}
+		}
+	}
+
+	// No match — exit status 0.
+	state.lastStatus = 0
+	return 0
 }
 
 // execSimple runs a single command (not in a pipeline).

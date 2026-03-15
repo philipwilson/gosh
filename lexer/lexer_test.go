@@ -501,6 +501,24 @@ func expectWordVal(t *testing.T, tokens []Token, idx int, val string) {
 	}
 }
 
+func TestDoubleSemicolon(t *testing.T) {
+	tokens, err := Lex("echo yes;;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// WORD("echo") WORD("yes") DSEMI EOF
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_WORD, TOKEN_DSEMI, TOKEN_EOF)
+}
+
+func TestRightParen(t *testing.T) {
+	tokens, err := Lex("foo)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_RPAREN, TOKEN_EOF)
+	expectWordVal(t, tokens, 0, "foo")
+}
+
 func TestArithSubstSimple(t *testing.T) {
 	tokens, err := Lex("echo $((1+2))")
 	if err != nil {

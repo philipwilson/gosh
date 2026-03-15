@@ -65,6 +65,8 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
 			// iteration by the executor.
 		case *parser.ForCmd:
 			// ForCmd words and body are expanded lazily by the executor.
+		case *parser.CaseCmd:
+			// CaseCmd word, patterns, and body are expanded lazily by the executor.
 		default:
 			_ = c
 		}

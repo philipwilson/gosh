@@ -153,6 +153,11 @@ func (l *lexer) lex() ([]Token, error) {
 		}
 
 		switch {
+		case ch == '#':
+			// Comment: skip the rest of the line.
+			l.pos = len(l.input)
+			continue
+
 		case ch == '|':
 			l.next()
 			if c, ok := l.peek(); ok && c == '|' {

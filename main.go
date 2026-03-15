@@ -124,20 +124,36 @@ func builtinCd(state *shellState, args []string, stdout *os.File) int {
 			return 1
 		}
 	case 1:
-		dir = args[0]
+		if args[0] == "-" {
+			dir = state.vars["OLDPWD"]
+			if dir == "" {
+				fmt.Fprintln(os.Stderr, "gosh: cd: OLDPWD not set")
+				return 1
+			}
+		} else {
+			dir = args[0]
+		}
 	default:
 		fmt.Fprintln(os.Stderr, "gosh: cd: too many arguments")
 		return 1
 	}
+
+	// Save current directory as OLDPWD before changing.
+	oldwd, _ := os.Getwd()
 
 	if err := syscall.Chdir(dir); err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: cd: %s: %v\n", dir, err)
 		return 1
 	}
 
-	// Update PWD to reflect the new directory.
+	state.setVar("OLDPWD", oldwd)
+
+	// Update PWD and print new directory if cd - was used.
 	if wd, err := os.Getwd(); err == nil {
 		state.setVar("PWD", wd)
+		if len(args) > 0 && args[0] == "-" {
+			fmt.Fprintln(stdout, wd)
+		}
 	}
 	return 0
 }
@@ -275,6 +291,12 @@ func main() {
 		tokens, err := lexer.Lex(line)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			continue
+		}
+
+		// A line that is only whitespace and/or a comment produces
+		// just an EOF token — nothing to parse or execute.
+		if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
 			continue
 		}
 

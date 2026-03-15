@@ -139,6 +139,49 @@ func TestOperatorsWithoutSpaces(t *testing.T) {
 		TOKEN_WORD, TOKEN_PIPE, TOKEN_WORD, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_EOF)
 }
 
+// --- Comment tests ---
+
+func TestCommentOnly(t *testing.T) {
+	tokens, err := Lex("# this is a comment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_EOF)
+}
+
+func TestCommentAfterCommand(t *testing.T) {
+	tokens, err := Lex("echo hello # world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "hello")
+}
+
+func TestHashInQuotes(t *testing.T) {
+	tokens, err := Lex(`echo "hello # world"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "hello # world")
+}
+
+func TestHashInSingleQuotes(t *testing.T) {
+	tokens, err := Lex("echo 'hello # world'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "hello # world")
+}
+
+func TestHashMidWord(t *testing.T) {
+	// # only starts a comment when it's the first char of a token
+	tokens, err := Lex("echo foo#bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "foo#bar")
+}
+
 // --- Word parts tests ---
 
 func TestPartsUnquoted(t *testing.T) {

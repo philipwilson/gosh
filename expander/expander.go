@@ -19,6 +19,7 @@ package expander
 import (
 	"gosh/lexer"
 	"gosh/parser"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -43,7 +44,18 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc) {
 }
 
 func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc) {
-	// Phase 1: variable expansion on all words.
+	// Phase 1: tilde expansion on all words.
+	for i := range cmd.Assigns {
+		cmd.Assigns[i].Value = expandTilde(cmd.Assigns[i].Value, lookup)
+	}
+	for i := range cmd.Args {
+		cmd.Args[i] = expandTilde(cmd.Args[i], lookup)
+	}
+	for i := range cmd.Redirects {
+		cmd.Redirects[i].File = expandTilde(cmd.Redirects[i].File, lookup)
+	}
+
+	// Phase 2: variable expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup)
 	}
@@ -54,10 +66,62 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc) {
 		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup)
 	}
 
-	// Phase 2: glob expansion on args only.
-	// Redirects are not glob-expanded (bash only expands them if
-	// the result is exactly one word; we keep it simple).
+	// Phase 3: glob expansion on args only.
 	cmd.Args = expandGlobsInArgs(cmd.Args)
+}
+
+// expandTilde performs tilde expansion on a word. Only an unquoted ~
+// at the very start of the word is expanded:
+//
+//	~        → $HOME
+//	~/path   → $HOME/path
+//	~user    → user's home directory
+//	"~"      → literal ~ (quoted, no expansion)
+func expandTilde(w lexer.Word, lookup LookupFunc) lexer.Word {
+	if len(w) == 0 {
+		return w
+	}
+
+	first := w[0]
+	if first.Quote != lexer.Unquoted || !strings.HasPrefix(first.Text, "~") {
+		return w
+	}
+
+	// Extract the tilde prefix: everything up to the first / (or end).
+	text := first.Text[1:] // skip the ~
+	var prefix, rest string
+	if idx := strings.IndexByte(text, '/'); idx >= 0 {
+		prefix = text[:idx]
+		rest = text[idx:] // includes the /
+	} else {
+		prefix = text
+		rest = ""
+	}
+
+	// Resolve the home directory.
+	var home string
+	if prefix == "" {
+		// ~ or ~/path → use $HOME
+		home = lookup("HOME")
+	} else {
+		// ~user → look up that user's home directory
+		if u, err := user.Lookup(prefix); err == nil {
+			home = u.HomeDir
+		} else {
+			return w // unknown user, keep as-is
+		}
+	}
+
+	if home == "" {
+		return w
+	}
+
+	// Replace the first part with the expanded path.
+	expanded := home + rest
+	result := make(lexer.Word, 0, len(w))
+	result = append(result, lexer.WordPart{Text: expanded, Quote: lexer.Unquoted})
+	result = append(result, w[1:]...)
+	return result
 }
 
 // expandVarsInWord expands $VAR references in a word, respecting quoting.

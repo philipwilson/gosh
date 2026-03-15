@@ -121,6 +121,48 @@ func TestExpandMixedQuoting(t *testing.T) {
 	expectArgs(t, list, 0, "healice$HOME")
 }
 
+// --- Tilde expansion tests ---
+
+func TestTildeAlone(t *testing.T) {
+	list := mustParse(t, "echo ~")
+	Expand(list, testLookup)
+	expectArgs(t, list, 0, "echo", "/home/user")
+}
+
+func TestTildeSlashPath(t *testing.T) {
+	list := mustParse(t, "echo ~/bin")
+	Expand(list, testLookup)
+	expectArgs(t, list, 0, "echo", "/home/user/bin")
+}
+
+func TestTildeQuotedNoExpansion(t *testing.T) {
+	list := mustParse(t, `echo "~"`)
+	Expand(list, testLookup)
+	expectArgs(t, list, 0, "echo", "~")
+}
+
+func TestTildeSingleQuotedNoExpansion(t *testing.T) {
+	list := mustParse(t, "echo '~/bin'")
+	Expand(list, testLookup)
+	expectArgs(t, list, 0, "echo", "~/bin")
+}
+
+func TestTildeMidWord(t *testing.T) {
+	// ~ only expands at start of word
+	list := mustParse(t, "echo foo~bar")
+	Expand(list, testLookup)
+	expectArgs(t, list, 0, "echo", "foo~bar")
+}
+
+func TestTildeInAssignment(t *testing.T) {
+	list := mustParse(t, "DIR=~/bin")
+	Expand(list, testLookup)
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if cmd.Assigns[0].Value.String() != "/home/user/bin" {
+		t.Errorf("expected /home/user/bin, got %q", cmd.Assigns[0].Value)
+	}
+}
+
 // --- Glob expansion tests ---
 
 // setupGlobDir creates a temp directory with known files for glob testing.

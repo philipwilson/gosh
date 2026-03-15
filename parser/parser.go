@@ -40,6 +40,14 @@ func (p *parser) next() lexer.Token {
 	return tok
 }
 
+// skipSemis consumes consecutive TOKEN_SEMI tokens. These arise from
+// newlines in multi-line input and are not meaningful between commands.
+func (p *parser) skipSemis() {
+	for p.peek().Type == lexer.TOKEN_SEMI {
+		p.next()
+	}
+}
+
 // isStopWord returns true if the current token is a reserved word
 // that should terminate list parsing.
 func (p *parser) isStopWord(stops ...string) bool {
@@ -60,6 +68,9 @@ func (p *parser) isStopWord(stops ...string) bool {
 // appears in command position.
 func (p *parser) parseList(stops ...string) (*List, error) {
 	list := &List{}
+
+	// Skip leading semicolons (from newlines in multi-line input).
+	p.skipSemis()
 
 	// A list may be empty if we immediately hit a stop word
 	// (e.g., "else" right after "then" with no commands — that's
@@ -104,7 +115,8 @@ func (p *parser) parseList(stops ...string) (*List, error) {
 
 		list.Entries = append(list.Entries, ListEntry{Pipeline: pipeline, Op: op})
 
-		// A trailing separator before a stop word or EOF is valid.
+		// Skip extra semicolons (from newlines) and check for end.
+		p.skipSemis()
 		if p.peek().Type == lexer.TOKEN_EOF {
 			return list, nil
 		}

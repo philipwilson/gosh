@@ -39,7 +39,7 @@ func execList(state *shellState, list *parser.List) {
 		} else {
 			execPipeline(state, entry.Pipeline)
 		}
-		if state.exitFlag {
+		if state.exitFlag || state.breakFlag || state.continueFlag {
 			return
 		}
 	}
@@ -364,12 +364,16 @@ func execIf(state *shellState, cmd *parser.IfCmd) int {
 // are cloned before each expansion so that $VAR references in the
 // original AST are preserved for re-expansion on each iteration.
 func execWhile(state *shellState, cmd *parser.WhileCmd) int {
+	state.loopDepth++
+	defer func() { state.loopDepth-- }()
+
 	for {
 		cond := parser.CloneList(cmd.Condition)
 		expander.Expand(cond, state.lookup, state.cmdSubst)
 		execList(state, cond)
 
-		if state.lastStatus != 0 {
+		if state.lastStatus != 0 || state.breakFlag {
+			state.breakFlag = false
 			break
 		}
 
@@ -377,13 +381,17 @@ func execWhile(state *shellState, cmd *parser.WhileCmd) int {
 		expander.Expand(body, state.lookup, state.cmdSubst)
 		execList(state, body)
 
-		if state.exitFlag {
+		if state.exitFlag || state.breakFlag {
+			if state.breakFlag {
+				state.breakFlag = false
+			}
 			return state.lastStatus
+		}
+		if state.continueFlag {
+			state.continueFlag = false
 		}
 	}
 
-	// Bash: while loop exit status is the status of the last body
-	// command executed, or 0 if the body never ran.
 	return state.lastStatus
 }
 
@@ -412,6 +420,9 @@ func execFor(state *shellState, cmd *parser.ForCmd) int {
 		return 0
 	}
 
+	state.loopDepth++
+	defer func() { state.loopDepth-- }()
+
 	for _, val := range values {
 		state.setVar(cmd.VarName, val)
 
@@ -419,8 +430,14 @@ func execFor(state *shellState, cmd *parser.ForCmd) int {
 		expander.Expand(body, state.lookup, state.cmdSubst)
 		execList(state, body)
 
-		if state.exitFlag {
+		if state.exitFlag || state.breakFlag {
+			if state.breakFlag {
+				state.breakFlag = false
+			}
 			return state.lastStatus
+		}
+		if state.continueFlag {
+			state.continueFlag = false
 		}
 	}
 

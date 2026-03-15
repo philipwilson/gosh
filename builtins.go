@@ -30,6 +30,8 @@ var builtins = map[string]builtinFunc{
 	"jobs":            builtinJobs,
 	"fg":              builtinFg,
 	"bg":              builtinBg,
+	"break":           builtinBreak,
+	"continue":        builtinContinue,
 	"debug-tokens":    builtinDebugTokens,
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
@@ -125,6 +127,26 @@ func builtinExit(state *shellState, args []string, stdout *os.File) int {
 	state.exitFlag = true
 	state.lastStatus = status
 	return status
+}
+
+// builtinBreak exits the innermost for/while loop.
+func builtinBreak(state *shellState, args []string, stdout *os.File) int {
+	if state.loopDepth == 0 {
+		fmt.Fprintln(os.Stderr, "gosh: break: only meaningful in a loop")
+		return 1
+	}
+	state.breakFlag = true
+	return 0
+}
+
+// builtinContinue skips to the next iteration of the innermost for/while loop.
+func builtinContinue(state *shellState, args []string, stdout *os.File) int {
+	if state.loopDepth == 0 {
+		fmt.Fprintln(os.Stderr, "gosh: continue: only meaningful in a loop")
+		return 1
+	}
+	state.continueFlag = true
+	return 0
 }
 
 // builtinExport marks variables for export to child processes.

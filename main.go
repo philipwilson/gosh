@@ -31,6 +31,9 @@ type shellState struct {
 	shellPgid     int               // the shell's own process group ID
 	termFd        int               // file descriptor of the controlling terminal
 	exitFlag      bool              // set by exit builtin to stop the REPL
+	breakFlag     bool              // set by break builtin to exit loop
+	continueFlag  bool              // set by continue builtin to skip to next iteration
+	loopDepth     int               // nesting depth of for/while loops
 	jobs          []*job            // job table for background/stopped jobs
 	nextJobID     int               // next job number to assign
 	debugTokens   bool              // print tokens before parsing
@@ -205,6 +208,24 @@ func runInteractive(state *shellState) {
 			continue
 		}
 
+		// Collect continuation lines for incomplete input.
+		for needsMore(line) {
+			more, err := state.ed.ReadLine("> ")
+			if err == io.EOF {
+				fmt.Fprintln(os.Stderr)
+				break
+			}
+			if err != nil {
+				break
+			}
+			// Trailing backslash: strip it and join directly.
+			if strings.HasSuffix(line, "\\") {
+				line = line[:len(line)-1] + more
+			} else {
+				line = line + "\n" + more
+			}
+		}
+
 		if runLine(state, line) {
 			break
 		}
@@ -232,10 +253,63 @@ func runNonInteractive(state *shellState) {
 			continue
 		}
 
+		// Collect continuation lines for incomplete input.
+		for needsMore(line) {
+			if !scanner.Scan() {
+				break
+			}
+			more := scanner.Text()
+			if strings.HasSuffix(line, "\\") {
+				line = line[:len(line)-1] + more
+			} else {
+				line = line + "\n" + more
+			}
+		}
+
 		if runLine(state, line) {
 			break
 		}
 	}
+}
+
+// needsMore returns true if the input is incomplete and should be
+// continued on the next line. Checks for trailing backslash, unclosed
+// quotes, trailing operators, and unclosed compound commands.
+func needsMore(line string) bool {
+	// Trailing backslash: explicit line continuation.
+	if strings.HasSuffix(strings.TrimRight(line, " \t"), "\\") {
+		return true
+	}
+
+	// Try to lex. Unterminated quotes need continuation.
+	tokens, err := lexer.Lex(line)
+	if err != nil {
+		msg := err.Error()
+		return strings.Contains(msg, "unterminated")
+	}
+
+	// Check for trailing operators that expect more input.
+	if len(tokens) >= 2 {
+		// Last token is EOF; check the one before it.
+		prev := tokens[len(tokens)-2]
+		switch prev.Type {
+		case lexer.TOKEN_PIPE, lexer.TOKEN_AND, lexer.TOKEN_OR:
+			return true
+		}
+	}
+
+	// Try to parse. Certain errors indicate incomplete input.
+	_, err = parser.Parse(tokens)
+	if err != nil {
+		msg := err.Error()
+		// "expected 'then'" etc. at EOF means the compound command
+		// isn't closed yet.
+		if strings.Contains(msg, "got EOF") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // runLine lexes, parses, expands, and executes a single input line.

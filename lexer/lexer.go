@@ -181,8 +181,30 @@ func (l *lexer) lex() ([]Token, error) {
 		switch {
 		case ch == '#':
 			// Comment: skip the rest of the line.
-			l.pos = len(l.input)
+			for {
+				c, ok := l.peek()
+				if !ok || c == '\n' {
+					break
+				}
+				l.next()
+			}
 			continue
+
+		case ch == '\n':
+			l.next()
+			// Newline acts as a command separator (like ;), but is
+			// suppressed when redundant: after another separator,
+			// after an operator that expects continuation (|, &&, ||),
+			// or at the start of input.
+			if len(tokens) == 0 {
+				continue
+			}
+			last := tokens[len(tokens)-1].Type
+			if last == TOKEN_SEMI || last == TOKEN_PIPE || last == TOKEN_AND ||
+				last == TOKEN_OR || last == TOKEN_AMP {
+				continue
+			}
+			tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
 
 		case ch == '|':
 			l.next()
@@ -366,7 +388,7 @@ func (l *lexer) readWord() (Word, error) {
 			}
 			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
 
-		case isOperator(ch) || ch == ' ' || ch == '\t':
+		case isOperator(ch) || ch == ' ' || ch == '\t' || ch == '\n':
 			goto done
 
 		default:

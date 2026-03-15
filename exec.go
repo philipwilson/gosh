@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"gosh/parser"
@@ -31,11 +32,89 @@ func execList(state *shellState, list *parser.List) {
 			}
 		}
 
-		execPipeline(state, entry.Pipeline)
+		if entry.Op == "&" {
+			execBackground(state, entry.Pipeline)
+		} else {
+			execPipeline(state, entry.Pipeline)
+		}
 		if state.exitFlag {
 			return
 		}
 	}
+}
+
+// execBackground starts a pipeline in the background without waiting.
+func execBackground(state *shellState, pipe *parser.Pipeline) {
+	n := len(pipe.Cmds)
+
+	type pipePair struct{ r, w *os.File }
+	var pipes []pipePair
+	if n > 1 {
+		pipes = make([]pipePair, n-1)
+		for i := range pipes {
+			r, w, err := os.Pipe()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gosh: pipe: %v\n", err)
+				return
+			}
+			pipes[i] = pipePair{r, w}
+		}
+	}
+
+	pgid := 0
+	var pids []int
+
+	for i, cmd := range pipe.Cmds {
+		var stdin *os.File
+		if i == 0 {
+			stdin = os.Stdin
+		} else {
+			stdin = pipes[i-1].r
+		}
+
+		var stdout *os.File
+		if i == n-1 {
+			stdout = os.Stdout
+		} else {
+			stdout = pipes[i].w
+		}
+
+		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		proc, opened := startProcess(state, cmd, fds, pgid)
+		// Close files opened by redirects immediately — the child has
+		// inherited them.
+		for _, f := range opened {
+			f.Close()
+		}
+		if proc == nil {
+			continue
+		}
+		pids = append(pids, proc.Pid)
+
+		if i == 0 {
+			pgid = proc.Pid
+			syscall.Setpgid(proc.Pid, proc.Pid)
+		}
+	}
+
+	for _, p := range pipes {
+		p.r.Close()
+		p.w.Close()
+	}
+
+	if len(pids) == 0 {
+		return
+	}
+
+	cmdParts := make([]string, n)
+	for i, cmd := range pipe.Cmds {
+		cmdParts[i] = strings.Join(cmd.ArgStrings(), " ")
+	}
+	cmdText := strings.Join(cmdParts, " | ")
+
+	j := state.addJob(pgid, pids, cmdText, jobRunning)
+	fmt.Fprintf(os.Stderr, "[%d] %d\n", j.id, pgid)
+	state.lastStatus = 0
 }
 
 func execPipeline(state *shellState, pipe *parser.Pipeline) {
@@ -102,21 +181,42 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 		p.w.Close()
 	}
 
+	var pids []int
+	for _, info := range infos {
+		if info.proc != nil {
+			pids = append(pids, info.proc.Pid)
+		}
+	}
+
+	anyStopped := false
 	for i, info := range infos {
 		if info.proc == nil {
 			continue
 		}
-		status := waitProc(info.proc)
+		res := waitProc(info.proc)
 		for _, f := range info.files {
 			f.Close()
 		}
+		if res.stopped {
+			anyStopped = true
+		}
 		if i == n-1 {
-			state.lastStatus = status
+			state.lastStatus = res.status
 		}
 	}
 
 	if state.interactive {
 		tcsetpgrp(state.termFd, state.shellPgid)
+	}
+
+	if anyStopped {
+		cmdParts := make([]string, n)
+		for i, cmd := range pipe.Cmds {
+			cmdParts[i] = strings.Join(cmd.ArgStrings(), " ")
+		}
+		cmdText := strings.Join(cmdParts, " | ")
+		j := state.addJob(pgid, pids, cmdText, jobStopped)
+		fmt.Fprintf(os.Stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
 	}
 }
 
@@ -184,12 +284,12 @@ func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File
 		if info.proc == nil {
 			continue
 		}
-		status := waitProc(info.proc)
+		res := waitProc(info.proc)
 		for _, f := range info.files {
 			f.Close()
 		}
 		if i == n-1 {
-			state.lastStatus = status
+			state.lastStatus = res.status
 		}
 	}
 }
@@ -250,7 +350,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		tcsetpgrp(state.termFd, pgid)
 	}
 
-	status := waitProc(proc)
+	res := waitProc(proc)
 	for _, f := range opened {
 		f.Close()
 	}
@@ -259,7 +359,14 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		tcsetpgrp(state.termFd, state.shellPgid)
 	}
 
-	return status
+	if res.stopped {
+		cmdText := cmd.ArgStrings()
+		j := state.addJob(pgid, []int{pgid}, strings.Join(cmdText, " "), jobStopped)
+		fmt.Fprintf(os.Stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
+		return res.status
+	}
+
+	return res.status
 }
 
 // savedVar records a variable's previous state for restoration.
@@ -392,20 +499,26 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, fds [3]*os.File, pgi
 	return proc, opened
 }
 
-func waitProc(proc *os.Process) int {
-	ps, err := proc.Wait()
+// waitResult holds the outcome of waiting on a process.
+type waitResult struct {
+	status  int  // exit status (or 128+signal)
+	stopped bool // true if the process was stopped (e.g., SIGTSTP)
+}
+
+func waitProc(proc *os.Process) waitResult {
+	var ws syscall.WaitStatus
+	_, err := syscall.Wait4(proc.Pid, &ws, syscall.WUNTRACED, nil)
+	// Release Go's internal process entry since we bypassed proc.Wait().
+	proc.Release()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: wait: %v\n", err)
-		return 1
+		return waitResult{status: 1}
 	}
-	if status, ok := ps.Sys().(syscall.WaitStatus); ok {
-		if status.Signaled() {
-			return 128 + int(status.Signal())
-		}
-		return status.ExitStatus()
+	if ws.Stopped() {
+		return waitResult{status: 128 + int(ws.StopSignal()), stopped: true}
 	}
-	if ps.Success() {
-		return 0
+	if ws.Signaled() {
+		return waitResult{status: 128 + int(ws.Signal())}
 	}
-	return 1
+	return waitResult{status: ws.ExitStatus()}
 }

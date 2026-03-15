@@ -22,9 +22,11 @@
 package editor
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // Editor handles line editing with history support.
@@ -248,18 +250,32 @@ const (
 	keyCtrlL     = -19
 )
 
+// readByte reads a single byte from the terminal, retrying on EINTR.
+// Signals (e.g., SIGCHLD from a finished background job) can
+// interrupt the read syscall; retrying is standard practice.
+func (e *Editor) readByte() (byte, error) {
+	var b [1]byte
+	for {
+		n, err := e.in.Read(b[:])
+		if err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return 0, err
+		}
+		if n == 0 {
+			return 0, io.EOF
+		}
+		return b[0], nil
+	}
+}
+
 // readKey reads a single keypress, decoding escape sequences.
 func (e *Editor) readKey() (int, error) {
-	var b [1]byte
-	n, err := e.in.Read(b[:])
+	ch, err := e.readByte()
 	if err != nil {
 		return 0, err
 	}
-	if n == 0 {
-		return 0, io.EOF
-	}
-
-	ch := b[0]
 
 	switch {
 	case ch == '\r' || ch == '\n':
@@ -295,20 +311,18 @@ func (e *Editor) readKey() (int, error) {
 
 // readEscape reads the rest of an escape sequence after ESC.
 func (e *Editor) readEscape() (int, error) {
-	var seq [2]byte
-
-	n, err := e.in.Read(seq[:1])
-	if err != nil || n == 0 {
-		return 27, err // bare ESC
+	b1, err := e.readByte()
+	if err != nil {
+		return 27, nil // bare ESC
 	}
 
-	if seq[0] == '[' {
-		n, err = e.in.Read(seq[1:])
-		if err != nil || n == 0 {
-			return 27, err
+	if b1 == '[' {
+		b2, err := e.readByte()
+		if err != nil {
+			return 27, nil
 		}
 
-		switch seq[1] {
+		switch b2 {
 		case 'A':
 			return keyUp, nil
 		case 'B':
@@ -322,16 +336,15 @@ func (e *Editor) readEscape() (int, error) {
 		case 'F':
 			return keyEnd, nil
 		case '3': // Delete key: ESC [ 3 ~
-			var tilde [1]byte
-			e.in.Read(tilde[:])
+			e.readByte() // consume ~
 			return keyDelete, nil
 		}
-	} else if seq[0] == 'O' {
-		n, err = e.in.Read(seq[1:])
-		if err != nil || n == 0 {
-			return 27, err
+	} else if b1 == 'O' {
+		b2, err := e.readByte()
+		if err != nil {
+			return 27, nil
 		}
-		switch seq[1] {
+		switch b2 {
 		case 'H':
 			return keyHome, nil
 		case 'F':

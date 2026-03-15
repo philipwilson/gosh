@@ -83,6 +83,7 @@ const (
 	TOKEN_SEMI                   // ;
 	TOKEN_AND                    // &&
 	TOKEN_OR                     // ||
+	TOKEN_AMP                    // & (background)
 	TOKEN_EOF                    // end of input
 )
 
@@ -106,6 +107,8 @@ func (t TokenType) String() string {
 		return "AND"
 	case TOKEN_OR:
 		return "OR"
+	case TOKEN_AMP:
+		return "AMP"
 	case TOKEN_EOF:
 		return "EOF"
 	default:
@@ -196,13 +199,7 @@ func (l *lexer) lex() ([]Token, error) {
 				l.next()
 				tokens = append(tokens, Token{Type: TOKEN_AND, Fd: -1})
 			} else {
-				// Bare & (background) — treat as a word for now.
-				tokens = append(tokens, Token{
-					Type:  TOKEN_WORD,
-					Val:   "&",
-					Parts: Word{{Text: "&", Quote: Unquoted}},
-					Fd:    -1,
-				})
+				tokens = append(tokens, Token{Type: TOKEN_AMP, Fd: -1})
 			}
 
 		case ch == ';':

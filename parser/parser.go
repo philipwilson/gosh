@@ -51,6 +51,8 @@ func (p *parser) parseList() (*List, error) {
 			op = "&&"
 		case lexer.TOKEN_OR:
 			op = "||"
+		case lexer.TOKEN_AMP:
+			op = "&"
 		case lexer.TOKEN_EOF:
 			list.Entries = append(list.Entries, ListEntry{Pipeline: pipeline})
 			return list, nil

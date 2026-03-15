@@ -27,6 +27,8 @@ type shellState struct {
 	shellPgid     int               // the shell's own process group ID
 	termFd        int               // file descriptor of the controlling terminal
 	exitFlag      bool              // set by exit builtin to stop the REPL
+	jobs          []*job            // job table for background/stopped jobs
+	nextJobID     int               // next job number to assign
 	debugTokens   bool              // print tokens before parsing
 	debugAST      bool              // print AST before expansion
 	debugExpanded bool              // print AST after expansion
@@ -51,7 +53,24 @@ func newShellState() *shellState {
 
 	if s.interactive {
 		s.shellPgid = syscall.Getpgrp()
-		signal.Ignore(syscall.SIGINT, syscall.SIGTSTP, syscall.SIGTTOU)
+
+		// SIGTTOU must be SIG_IGN so the shell can call tcsetpgrp
+		// from a background process group. SIG_IGN persists across
+		// exec, but that's acceptable — children in the foreground
+		// group won't receive SIGTTOU anyway.
+		signal.Ignore(syscall.SIGTTOU)
+
+		// SIGINT and SIGTSTP use signal.Notify (not signal.Ignore).
+		// signal.Ignore sets SIG_IGN at the OS level, which persists
+		// across exec (POSIX: only caught handlers are reset to
+		// SIG_DFL by exec). That would make Ctrl-C and Ctrl-Z
+		// ineffective in child processes.
+		//
+		// signal.Notify installs Go's own caught handler. After exec,
+		// POSIX resets caught handlers to SIG_DFL, so children get
+		// default signal behavior.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTSTP)
 	}
 
 	return s
@@ -160,6 +179,7 @@ func main() {
 
 func runInteractive(state *shellState) {
 	for {
+		state.reapJobs()
 		line, err := state.ed.ReadLine("gosh$ ")
 		if err == io.EOF {
 			fmt.Fprintln(os.Stderr)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // builtinFunc is the signature for all builtin commands.
@@ -25,6 +26,9 @@ var builtins = map[string]builtinFunc{
 	"unset":           builtinUnset,
 	"true":            builtinTrue,
 	"false":           builtinFalse,
+	"jobs":            builtinJobs,
+	"fg":              builtinFg,
+	"bg":              builtinBg,
 	"debug-tokens":    builtinDebugTokens,
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
@@ -196,5 +200,124 @@ func builtinHistory(state *shellState, args []string, stdout *os.File) int {
 	for i, entry := range entries {
 		fmt.Fprintf(stdout, "%5d  %s\n", i+1, entry)
 	}
+	return 0
+}
+
+// parseJobSpec parses a job specifier like "%1" and returns the job ID.
+// If args is empty, returns -1 to indicate "current job".
+func parseJobSpec(args []string) (int, error) {
+	if len(args) == 0 {
+		return -1, nil
+	}
+	spec := args[0]
+	if len(spec) > 0 && spec[0] == '%' {
+		spec = spec[1:]
+	}
+	id, err := strconv.Atoi(spec)
+	if err != nil {
+		return 0, fmt.Errorf("invalid job spec: %s", args[0])
+	}
+	return id, nil
+}
+
+// builtinJobs lists all active jobs.
+func builtinJobs(state *shellState, args []string, stdout *os.File) int {
+	state.reapJobs()
+	for _, j := range state.jobs {
+		fmt.Fprintf(stdout, "[%d]+  %-24s%s\n", j.id, j.state, j.cmd)
+	}
+	return 0
+}
+
+// builtinFg brings a job to the foreground.
+func builtinFg(state *shellState, args []string, stdout *os.File) int {
+	id, err := parseJobSpec(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: fg: %v\n", err)
+		return 1
+	}
+
+	var j *job
+	if id < 0 {
+		j = state.currentJob()
+	} else {
+		j = state.findJob(id)
+	}
+	if j == nil {
+		if id < 0 {
+			fmt.Fprintln(os.Stderr, "gosh: fg: no current job")
+		} else {
+			fmt.Fprintf(os.Stderr, "gosh: fg: %%%d: no such job\n", id)
+		}
+		return 1
+	}
+
+	fmt.Fprintf(os.Stderr, "%s\n", j.cmd)
+
+	// Give the job the terminal and send SIGCONT.
+	if state.interactive {
+		tcsetpgrp(state.termFd, j.pgid)
+	}
+	syscall.Kill(-j.pgid, syscall.SIGCONT)
+	j.state = jobRunning
+
+	// Wait for the job (may stop again).
+	var lastResult waitResult
+	for _, pid := range j.pids {
+		var ws syscall.WaitStatus
+		_, err := syscall.Wait4(pid, &ws, syscall.WUNTRACED, nil)
+		if err != nil {
+			continue
+		}
+		if ws.Stopped() {
+			lastResult = waitResult{status: 128 + int(ws.StopSignal()), stopped: true}
+		} else if ws.Signaled() {
+			lastResult = waitResult{status: 128 + int(ws.Signal())}
+		} else {
+			lastResult = waitResult{status: ws.ExitStatus()}
+		}
+	}
+
+	if state.interactive {
+		tcsetpgrp(state.termFd, state.shellPgid)
+	}
+
+	if lastResult.stopped {
+		j.state = jobStopped
+		fmt.Fprintf(os.Stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
+	} else {
+		state.removeJob(j.id)
+	}
+
+	state.lastStatus = lastResult.status
+	return lastResult.status
+}
+
+// builtinBg resumes a stopped job in the background.
+func builtinBg(state *shellState, args []string, stdout *os.File) int {
+	id, err := parseJobSpec(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: bg: %v\n", err)
+		return 1
+	}
+
+	var j *job
+	if id < 0 {
+		j = state.currentJob()
+	} else {
+		j = state.findJob(id)
+	}
+	if j == nil {
+		if id < 0 {
+			fmt.Fprintln(os.Stderr, "gosh: bg: no current job")
+		} else {
+			fmt.Fprintf(os.Stderr, "gosh: bg: %%%d: no such job\n", id)
+		}
+		return 1
+	}
+
+	syscall.Kill(-j.pgid, syscall.SIGCONT)
+	j.state = jobRunning
+	fmt.Fprintf(os.Stderr, "[%d]+ %s &\n", j.id, j.cmd)
 	return 0
 }

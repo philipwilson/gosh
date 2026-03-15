@@ -213,6 +213,13 @@ func restoreVars(state *shellState, saved map[string]savedVar) {
 func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.File, error) {
 	var opened []*os.File
 
+	fail := func(err error) ([3]*os.File, []*os.File, error) {
+		for _, o := range opened {
+			o.Close()
+		}
+		return fds, nil, err
+	}
+
 	for _, r := range cmd.Redirects {
 		// Resolve the source fd: use explicit fd, or default
 		// based on redirect type.
@@ -227,10 +234,7 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 		}
 
 		if fd > 2 {
-			for _, o := range opened {
-				o.Close()
-			}
-			return fds, nil, fmt.Errorf("fd %d: only 0-2 supported", fd)
+			return fail(fmt.Errorf("fd %d: only 0-2 supported", fd))
 		}
 
 		switch r.Type {
@@ -238,10 +242,7 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 			filename := r.File.String()
 			f, err := os.Open(filename)
 			if err != nil {
-				for _, o := range opened {
-					o.Close()
-				}
-				return fds, nil, fmt.Errorf("%s: %v", filename, err)
+				return fail(fmt.Errorf("%s: %v", filename, err))
 			}
 			opened = append(opened, f)
 			fds[fd] = f
@@ -250,10 +251,7 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 			filename := r.File.String()
 			f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 			if err != nil {
-				for _, o := range opened {
-					o.Close()
-				}
-				return fds, nil, fmt.Errorf("%s: %v", filename, err)
+				return fail(fmt.Errorf("%s: %v", filename, err))
 			}
 			opened = append(opened, f)
 			fds[fd] = f
@@ -262,10 +260,7 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 			filename := r.File.String()
 			f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 			if err != nil {
-				for _, o := range opened {
-					o.Close()
-				}
-				return fds, nil, fmt.Errorf("%s: %v", filename, err)
+				return fail(fmt.Errorf("%s: %v", filename, err))
 			}
 			opened = append(opened, f)
 			fds[fd] = f
@@ -273,10 +268,7 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 		case parser.REDIR_DUP:
 			target, err := strconv.Atoi(r.File.String())
 			if err != nil || target < 0 || target > 2 {
-				for _, o := range opened {
-					o.Close()
-				}
-				return fds, nil, fmt.Errorf("bad fd: %s", r.File.String())
+				return fail(fmt.Errorf("bad fd: %s", r.File.String()))
 			}
 			fds[fd] = fds[target]
 		}

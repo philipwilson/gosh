@@ -31,6 +31,7 @@ import (
 type Editor struct {
 	History *History
 	fd      int
+	in      *os.File
 	orig    termios
 }
 
@@ -45,6 +46,7 @@ func New(fd int, historyPath string) (*Editor, error) {
 	return &Editor{
 		History: NewHistory(historyPath),
 		fd:      fd,
+		in:      os.NewFile(uintptr(fd), "/dev/stdin"),
 		orig:    orig,
 	}, nil
 }
@@ -249,7 +251,7 @@ const (
 // readKey reads a single keypress, decoding escape sequences.
 func (e *Editor) readKey() (int, error) {
 	var b [1]byte
-	n, err := os.Stdin.Read(b[:])
+	n, err := e.in.Read(b[:])
 	if err != nil {
 		return 0, err
 	}
@@ -295,13 +297,13 @@ func (e *Editor) readKey() (int, error) {
 func (e *Editor) readEscape() (int, error) {
 	var seq [2]byte
 
-	n, err := os.Stdin.Read(seq[:1])
+	n, err := e.in.Read(seq[:1])
 	if err != nil || n == 0 {
 		return 27, err // bare ESC
 	}
 
 	if seq[0] == '[' {
-		n, err = os.Stdin.Read(seq[1:])
+		n, err = e.in.Read(seq[1:])
 		if err != nil || n == 0 {
 			return 27, err
 		}
@@ -321,11 +323,11 @@ func (e *Editor) readEscape() (int, error) {
 			return keyEnd, nil
 		case '3': // Delete key: ESC [ 3 ~
 			var tilde [1]byte
-			os.Stdin.Read(tilde[:])
+			e.in.Read(tilde[:])
 			return keyDelete, nil
 		}
 	} else if seq[0] == 'O' {
-		n, err = os.Stdin.Read(seq[1:])
+		n, err = e.in.Read(seq[1:])
 		if err != nil || n == 0 {
 			return 27, err
 		}

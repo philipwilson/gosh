@@ -48,6 +48,7 @@ const (
 	CmdSubstDQ                       // $(cmd) or `cmd` inside double quotes
 	ArithSubst                       // $(( expr )) in unquoted context
 	ArithSubstDQ                     // $(( expr )) inside double quotes
+	Expanded                         // result of unquoted expansion — subject to word splitting
 )
 
 // WordPart is a fragment of a word with a uniform quoting context.

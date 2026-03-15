@@ -71,9 +71,10 @@ func TestExpandMultipleVars(t *testing.T) {
 }
 
 func TestExpandUndefined(t *testing.T) {
+	// Unquoted $UNDEFINED expands to empty and is removed by word splitting.
 	list := mustParse(t, `echo $UNDEFINED`)
 	Expand(list, testLookup, nil)
-	expectArgs(t, list, 0, "echo", "")
+	expectArgs(t, list, 0, "echo")
 }
 
 func TestExpandExitStatus(t *testing.T) {
@@ -370,6 +371,135 @@ func TestExpandPositionalParams(t *testing.T) {
 	list := mustParse(t, `echo $1 $2 $# "$@" $0`)
 	Expand(list, lookup, nil)
 	expectArgs(t, list, 0, "echo", "hello", "world", "2", "hello world", "gosh")
+}
+
+// --- Word splitting tests ---
+
+func TestWordSplitBasic(t *testing.T) {
+	// $X where X="a b c" → three separate args
+	lookup := func(name string) string {
+		if name == "X" {
+			return "a b c"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo $X`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "a", "b", "c")
+}
+
+func TestWordSplitNoSplitInDoubleQuotes(t *testing.T) {
+	// "$X" prevents word splitting
+	lookup := func(name string) string {
+		if name == "X" {
+			return "a b c"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo "$X"`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "a b c")
+}
+
+func TestWordSplitEmptyRemoved(t *testing.T) {
+	// $EMPTY (empty string, unquoted) is removed
+	lookup := func(name string) string { return "" }
+	list := mustParse(t, `echo $EMPTY world`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "world")
+}
+
+func TestWordSplitEmptyQuotedPreserved(t *testing.T) {
+	// "$EMPTY" preserves the empty argument
+	lookup := func(name string) string { return "" }
+	list := mustParse(t, `echo "$EMPTY" world`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "", "world")
+}
+
+func TestWordSplitMixedWithLiteral(t *testing.T) {
+	// hello${X}world where X="a b" → "helloa" "bworld"
+	lookup := func(name string) string {
+		if name == "X" {
+			return "a b"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo hello${X}world`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "helloa", "bworld")
+}
+
+func TestWordSplitLeadingIFS(t *testing.T) {
+	// hello$X where X=" a b" → "hello" "a" "b"
+	lookup := func(name string) string {
+		if name == "X" {
+			return " a b"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo hello$X`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "hello", "a", "b")
+}
+
+func TestWordSplitMultipleSpaces(t *testing.T) {
+	// Consecutive IFS whitespace is collapsed
+	lookup := func(name string) string {
+		if name == "X" {
+			return "a   b"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo $X`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "a", "b")
+}
+
+func TestWordSplitLeadingTrailingWhitespace(t *testing.T) {
+	// Leading/trailing IFS whitespace is trimmed
+	lookup := func(name string) string {
+		if name == "X" {
+			return "  a  b  "
+		}
+		return ""
+	}
+	list := mustParse(t, `echo $X`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "a", "b")
+}
+
+func TestWordSplitCmdSubst(t *testing.T) {
+	// Command substitution results are also split
+	subst := func(cmd string) (string, error) {
+		return "a b c", nil
+	}
+	list := mustParse(t, `echo $(cmd)`)
+	Expand(list, testLookup, subst)
+	expectArgs(t, list, 0, "echo", "a", "b", "c")
+}
+
+func TestWordSplitCmdSubstQuoted(t *testing.T) {
+	// Quoted command substitution is not split
+	subst := func(cmd string) (string, error) {
+		return "a b c", nil
+	}
+	list := mustParse(t, `echo "$(cmd)"`)
+	Expand(list, testLookup, subst)
+	expectArgs(t, list, 0, "echo", "a b c")
+}
+
+func TestWordSplitForLoop(t *testing.T) {
+	// Word splitting in for loop word list: $X produces multiple words
+	lookup := func(name string) string {
+		if name == "X" {
+			return "a b c"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo $X done`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "a", "b", "c", "done")
 }
 
 func simpleCmd(t *testing.T, cmd parser.Command) *parser.SimpleCmd {

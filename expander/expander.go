@@ -6,6 +6,7 @@
 //  1. Tilde expansion: ~ → $HOME, ~user → user's home dir
 //  2. Command substitution: $(cmd) and `cmd` → output of cmd
 //  3. Variable expansion: $VAR, ${VAR}, $?, $$
+//  3.5. Word splitting: split unquoted expansion results on IFS
 //  4. Glob expansion: *, ?, [...] on unquoted args
 //
 // Variable expansion follows bash quoting rules:
@@ -122,6 +123,14 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc) {
 		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup)
 	}
 
+	// Phase 3.5: word splitting on args only (not assignments or redirects).
+	// Split unquoted expansion results on IFS characters.
+	ifs := lookup("IFS")
+	if ifs == "" {
+		ifs = " \t\n" // default IFS when unset
+	}
+	cmd.Args = splitFieldsInArgs(cmd.Args, ifs)
+
 	// Phase 4: glob expansion on args only.
 	cmd.Args = expandGlobsInArgs(cmd.Args)
 }
@@ -197,9 +206,9 @@ func expandArithInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 			text = strconv.FormatInt(val, 10)
 		}
 
-		// ArithSubst (unquoted) → result is Unquoted (subject to globs).
+		// ArithSubst (unquoted) → result is Expanded (subject to splitting/globs).
 		// ArithSubstDQ (double-quoted) → result is DoubleQuoted (no globs).
-		quote := lexer.Unquoted
+		quote := lexer.Expanded
 		if part.Quote == lexer.ArithSubstDQ {
 			quote = lexer.DoubleQuoted
 		}
@@ -227,9 +236,9 @@ func expandCmdSubstInWord(w lexer.Word, subst SubstFunc) lexer.Word {
 			output = ""
 		}
 
-		// CmdSubst (unquoted) → result is Unquoted (subject to globs).
+		// CmdSubst (unquoted) → result is Expanded (subject to splitting/globs).
 		// CmdSubstDQ (double-quoted) → result is DoubleQuoted (no globs).
-		quote := lexer.Unquoted
+		quote := lexer.Expanded
 		if part.Quote == lexer.CmdSubstDQ {
 			quote = lexer.DoubleQuoted
 		}
@@ -240,6 +249,8 @@ func expandCmdSubstInWord(w lexer.Word, subst SubstFunc) lexer.Word {
 }
 
 // expandVarsInWord expands $VAR references in a word, respecting quoting.
+// For Unquoted parts, expansion results are marked Expanded (subject to
+// word splitting). For DoubleQuoted parts, results keep DoubleQuoted context.
 func expandVarsInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 	var result lexer.Word
 
@@ -248,14 +259,190 @@ func expandVarsInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 			result = append(result, part)
 			continue
 		}
-		expanded := expandDollar(part.Text, lookup)
-		result = append(result, lexer.WordPart{
-			Text:  expanded,
-			Quote: part.Quote,
-		})
+		if part.Quote == lexer.Unquoted {
+			// Produce structured parts: literal text stays Unquoted,
+			// expansion results are marked Expanded for word splitting.
+			result = append(result, expandDollarParts(part.Text, lookup)...)
+		} else {
+			// DoubleQuoted (or Expanded from prior phase) — expand
+			// variables but keep the quoting context.
+			expanded := expandDollar(part.Text, lookup)
+			result = append(result, lexer.WordPart{
+				Text:  expanded,
+				Quote: part.Quote,
+			})
+		}
 	}
 
 	return result
+}
+
+// --- Word splitting (IFS field splitting) ---
+
+// splitFieldsInArgs performs IFS word splitting on each arg word.
+// Only parts marked Expanded (from unquoted variable/command/arithmetic
+// expansion) are split. Literal and quoted parts are not split.
+// A word that consists entirely of empty Expanded parts (with no
+// literal or quoted text) is removed entirely.
+func splitFieldsInArgs(args []lexer.Word, ifs string) []lexer.Word {
+	var result []lexer.Word
+	for _, w := range args {
+		if !hasExpandedPart(w) {
+			result = append(result, w)
+			continue
+		}
+		result = append(result, splitWord(w, ifs)...)
+	}
+	return result
+}
+
+// hasExpandedPart returns true if a word contains any Expanded parts.
+func hasExpandedPart(w lexer.Word) bool {
+	for _, p := range w {
+		if p.Quote == lexer.Expanded {
+			return true
+		}
+	}
+	return false
+}
+
+// splitWord splits a single word on IFS boundaries within Expanded parts.
+// Non-Expanded parts (literal text, quoted text) are never split.
+// Returns zero or more words.
+func splitWord(w lexer.Word, ifs string) []lexer.Word {
+	var words []lexer.Word
+	var cur lexer.Word // parts accumulating for the current output word
+
+	for _, part := range w {
+		if part.Quote != lexer.Expanded {
+			cur = append(cur, part)
+			continue
+		}
+
+		fields, startsIFS, endsIFS := ifsSplit(part.Text, ifs)
+
+		if len(fields) == 0 {
+			// Empty expansion. If it starts/ends with IFS (e.g., all
+			// whitespace), emit the current accumulator as a word.
+			if (startsIFS || endsIFS) && len(cur) > 0 {
+				words = append(words, cur)
+				cur = nil
+			}
+			continue
+		}
+
+		// First field: if the expansion starts with IFS, split from
+		// any preceding literal text before joining the first field.
+		if startsIFS && len(cur) > 0 {
+			words = append(words, cur)
+			cur = nil
+		}
+		if fields[0] != "" {
+			cur = append(cur, lexer.WordPart{Text: fields[0], Quote: lexer.Unquoted})
+		}
+
+		// Middle fields (index 1..n-2): each becomes a separate word.
+		for j := 1; j < len(fields)-1; j++ {
+			if len(cur) > 0 {
+				words = append(words, cur)
+			}
+			cur = lexer.Word{{Text: fields[j], Quote: lexer.Unquoted}}
+		}
+
+		// Last field (if more than one): emit current, start fresh.
+		if len(fields) > 1 {
+			if len(cur) > 0 {
+				words = append(words, cur)
+			}
+			last := fields[len(fields)-1]
+			if last != "" {
+				cur = lexer.Word{{Text: last, Quote: lexer.Unquoted}}
+			} else {
+				cur = nil
+			}
+		}
+
+		// If the expansion ends with IFS and there's following text,
+		// emit the current accumulator so following parts start fresh.
+		if endsIFS && len(cur) > 0 {
+			words = append(words, cur)
+			cur = nil
+		}
+	}
+
+	if len(cur) > 0 {
+		words = append(words, cur)
+	}
+
+	return words
+}
+
+// ifsSplit splits a string on IFS characters following POSIX rules.
+// IFS whitespace (space, tab, newline present in ifs) is trimmed from
+// the start/end and collapsed between fields. Non-whitespace IFS
+// characters each act as an individual delimiter (producing empty
+// fields between consecutive occurrences). Returns the fields and
+// whether the string started/ended with IFS characters.
+func ifsSplit(s, ifs string) (fields []string, startsIFS, endsIFS bool) {
+	if s == "" {
+		return nil, false, false
+	}
+	if ifs == "" {
+		return []string{s}, false, false
+	}
+
+	runes := []rune(s)
+	n := len(runes)
+
+	isIFS := func(r rune) bool { return strings.ContainsRune(ifs, r) }
+	isWhiteIFS := func(r rune) bool {
+		return (r == ' ' || r == '\t' || r == '\n') && strings.ContainsRune(ifs, r)
+	}
+
+	startsIFS = isIFS(runes[0])
+	endsIFS = isIFS(runes[n-1])
+
+	i := 0
+
+	// Skip leading IFS whitespace.
+	for i < n && isWhiteIFS(runes[i]) {
+		i++
+	}
+
+	// Leading non-whitespace IFS char → empty first field.
+	if i < n && isIFS(runes[i]) && !isWhiteIFS(runes[i]) {
+		fields = append(fields, "")
+	}
+
+	for i < n {
+		// Collect non-IFS characters into a field.
+		start := i
+		for i < n && !isIFS(runes[i]) {
+			i++
+		}
+		fields = append(fields, string(runes[start:i]))
+
+		if i >= n {
+			break
+		}
+
+		// Consume delimiter: optional whitespace, optional non-whitespace, optional whitespace.
+		for i < n && isWhiteIFS(runes[i]) {
+			i++
+		}
+		if i < n && isIFS(runes[i]) && !isWhiteIFS(runes[i]) {
+			i++
+			for i < n && isWhiteIFS(runes[i]) {
+				i++
+			}
+			// Trailing non-whitespace delimiter at end → empty trailing field.
+			if i >= n {
+				fields = append(fields, "")
+			}
+		}
+	}
+
+	return fields, startsIFS, endsIFS
 }
 
 // expandGlobsInArgs processes a list of arg words, expanding any
@@ -332,6 +519,94 @@ func buildGlobPattern(w lexer.Word) string {
 // (e.g., to expand a single word for redirect filenames).
 func ExpandWord(w lexer.Word, lookup LookupFunc) string {
 	return expandVarsInWord(w, lookup).String()
+}
+
+// expandDollarParts is like expandDollar but returns structured parts:
+// literal text is marked Unquoted, expansion results are marked Expanded.
+// This preserves the boundary between literal and expanded text so that
+// word splitting can act only on expanded portions.
+func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
+	if !strings.ContainsRune(text, '$') {
+		return []lexer.WordPart{{Text: text, Quote: lexer.Unquoted}}
+	}
+
+	runes := []rune(text)
+	var parts []lexer.WordPart
+	var literal strings.Builder
+
+	flushLiteral := func() {
+		if literal.Len() > 0 {
+			parts = append(parts, lexer.WordPart{Text: literal.String(), Quote: lexer.Unquoted})
+			literal.Reset()
+		}
+	}
+
+	i := 0
+	for i < len(runes) {
+		if runes[i] != '$' {
+			literal.WriteRune(runes[i])
+			i++
+			continue
+		}
+
+		i++ // skip $
+
+		if i >= len(runes) {
+			literal.WriteRune('$')
+			break
+		}
+
+		var varName string
+		consumed := true
+		switch {
+		case runes[i] == '{':
+			i++ // skip {
+			start := i
+			for i < len(runes) && runes[i] != '}' {
+				i++
+			}
+			if i >= len(runes) {
+				literal.WriteString("${")
+				literal.WriteString(string(runes[start:]))
+				consumed = false
+			} else {
+				varName = string(runes[start:i])
+				i++ // skip }
+			}
+		case runes[i] == '?':
+			varName = "?"
+			i++
+		case runes[i] == '$':
+			varName = "$"
+			i++
+		case runes[i] == '#':
+			varName = "#"
+			i++
+		case runes[i] == '@' || runes[i] == '*':
+			varName = string(runes[i])
+			i++
+		case runes[i] >= '0' && runes[i] <= '9':
+			varName = string(runes[i])
+			i++
+		case isNameStart(runes[i]):
+			start := i
+			for i < len(runes) && isNameCont(runes[i]) {
+				i++
+			}
+			varName = string(runes[start:i])
+		default:
+			literal.WriteRune('$')
+			consumed = false
+		}
+
+		if consumed {
+			flushLiteral()
+			parts = append(parts, lexer.WordPart{Text: lookup(varName), Quote: lexer.Expanded})
+		}
+	}
+
+	flushLiteral()
+	return parts
 }
 
 // expandDollar scans text for $VAR, ${VAR}, $?, $$ and replaces

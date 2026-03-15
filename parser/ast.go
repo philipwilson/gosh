@@ -214,6 +214,16 @@ func cloneCommand(c Command) Command {
 			Condition: CloneList(c.Condition),
 			Body:      CloneList(c.Body),
 		}
+	case *ForCmd:
+		words := make([]lexer.Word, len(c.Words))
+		for i, w := range c.Words {
+			words[i] = CloneWord(w)
+		}
+		return &ForCmd{
+			VarName: c.VarName,
+			Words:   words,
+			Body:    CloneList(c.Body),
+		}
 	default:
 		return c
 	}
@@ -224,23 +234,25 @@ func cloneSimpleCmd(c *SimpleCmd) *SimpleCmd {
 	for _, a := range c.Assigns {
 		sc.Assigns = append(sc.Assigns, Assignment{
 			Name:  a.Name,
-			Value: cloneWord(a.Value),
+			Value: CloneWord(a.Value),
 		})
 	}
 	for _, w := range c.Args {
-		sc.Args = append(sc.Args, cloneWord(w))
+		sc.Args = append(sc.Args, CloneWord(w))
 	}
 	for _, r := range c.Redirects {
 		sc.Redirects = append(sc.Redirects, Redirect{
 			Fd:   r.Fd,
 			Type: r.Type,
-			File: cloneWord(r.File),
+			File: CloneWord(r.File),
 		})
 	}
 	return sc
 }
 
-func cloneWord(w lexer.Word) lexer.Word {
+// CloneWord deep-copies a Word so in-place expansion doesn't corrupt
+// the original.
+func CloneWord(w lexer.Word) lexer.Word {
 	if w == nil {
 		return nil
 	}
@@ -275,6 +287,25 @@ func (c *WhileCmd) node()    {}
 func (c *WhileCmd) command() {}
 func (c *WhileCmd) String() string {
 	return "While[cond=" + c.Condition.String() + " body=" + c.Body.String() + "]"
+}
+
+// --- ForCmd ---
+
+// ForCmd represents: for NAME in word...; do list; done
+type ForCmd struct {
+	VarName string       // loop variable name
+	Words   []lexer.Word // words to iterate over (expanded before iteration)
+	Body    *List
+}
+
+func (c *ForCmd) node()    {}
+func (c *ForCmd) command() {}
+func (c *ForCmd) String() string {
+	var words []string
+	for _, w := range c.Words {
+		words = append(words, w.String())
+	}
+	return "For[" + c.VarName + " in " + strings.Join(words, " ") + " body=" + c.Body.String() + "]"
 }
 
 func (c *IfCmd) node()    {}

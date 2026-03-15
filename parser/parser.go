@@ -11,7 +11,7 @@ import (
 // the lexer.
 var reservedWords = map[string]bool{
 	"then": true, "elif": true, "else": true, "fi": true,
-	"do": true, "done": true, // for future while/for
+	"do": true, "done": true, "in": true,
 }
 
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
@@ -151,6 +151,8 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseIf()
 		case "while":
 			return p.parseWhile()
+		case "for":
+			return p.parseFor()
 		}
 	}
 	return p.parseSimpleCommand()
@@ -235,6 +237,59 @@ func (p *parser) parseWhile() (*WhileCmd, error) {
 	}
 
 	return &WhileCmd{Condition: cond, Body: body}, nil
+}
+
+// parseFor parses: 'for' NAME 'in' word... (';' | EOF-before-do) 'do' list 'done'
+func (p *parser) parseFor() (*ForCmd, error) {
+	p.next() // consume "for"
+
+	// Expect variable name.
+	tok := p.peek()
+	if tok.Type != lexer.TOKEN_WORD {
+		return nil, fmt.Errorf("expected variable name after 'for', got %s", tok)
+	}
+	varName := tok.Val
+	p.next()
+
+	// Expect "in".
+	if !p.expectWord("in") {
+		return nil, fmt.Errorf("expected 'in' after 'for %s', got %s", varName, p.peek())
+	}
+
+	// Collect words until we hit ';' or 'do'.
+	var words []lexer.Word
+	for {
+		tok = p.peek()
+		if tok.Type == lexer.TOKEN_SEMI {
+			p.next() // consume ;
+			break
+		}
+		if tok.Type == lexer.TOKEN_WORD && tok.Val == "do" {
+			break
+		}
+		if tok.Type == lexer.TOKEN_EOF {
+			return nil, fmt.Errorf("expected 'do', got EOF")
+		}
+		if tok.Type != lexer.TOKEN_WORD {
+			return nil, fmt.Errorf("expected word in 'for' list, got %s", tok)
+		}
+		p.next()
+		words = append(words, tok.Parts)
+	}
+
+	if !p.expectWord("do") {
+		return nil, fmt.Errorf("expected 'do', got %s", p.peek())
+	}
+
+	body, err := p.parseList("done")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("done") {
+		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
+	}
+
+	return &ForCmd{VarName: varName, Words: words, Body: body}, nil
 }
 
 // peekWord returns true if the next token is a WORD with the given value.

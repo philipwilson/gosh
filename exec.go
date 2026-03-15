@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"gosh/expander"
+	"gosh/lexer"
 	"gosh/parser"
 )
 
@@ -326,6 +327,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execIf(state, c)
 	case *parser.WhileCmd:
 		return execWhile(state, c)
+	case *parser.ForCmd:
+		return execFor(state, c)
 	default:
 		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
 		return 1
@@ -381,6 +384,46 @@ func execWhile(state *shellState, cmd *parser.WhileCmd) int {
 
 	// Bash: while loop exit status is the status of the last body
 	// command executed, or 0 if the body never ran.
+	return state.lastStatus
+}
+
+// execFor evaluates a for/in/do/done loop. The word list is expanded
+// once (variables + globs), then the body runs for each resulting word
+// with the loop variable set.
+func execFor(state *shellState, cmd *parser.ForCmd) int {
+	// Expand the word list: variable expansion + glob expansion.
+	// Build a temporary SimpleCmd to reuse the expander's word logic.
+	expandedWords := make([]lexer.Word, len(cmd.Words))
+	for i, w := range cmd.Words {
+		expandedWords[i] = parser.CloneWord(w)
+	}
+	tmpCmd := &parser.SimpleCmd{Args: expandedWords}
+	expander.Expand(&parser.List{
+		Entries: []parser.ListEntry{{
+			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
+		}},
+	}, state.lookup, state.cmdSubst)
+
+	// Collect the expanded arg strings.
+	values := tmpCmd.ArgStrings()
+
+	if len(values) == 0 {
+		state.lastStatus = 0
+		return 0
+	}
+
+	for _, val := range values {
+		state.setVar(cmd.VarName, val)
+
+		body := parser.CloneList(cmd.Body)
+		expander.Expand(body, state.lookup, state.cmdSubst)
+		execList(state, body)
+
+		if state.exitFlag {
+			return state.lastStatus
+		}
+	}
+
 	return state.lastStatus
 }
 

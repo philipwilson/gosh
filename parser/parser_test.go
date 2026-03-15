@@ -448,6 +448,60 @@ func TestWhileAfterCommand(t *testing.T) {
 	}
 }
 
+// --- For tests ---
+
+func TestForSimple(t *testing.T) {
+	list := mustParse(t, "for x in a b c; do echo $x; done")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	fc, ok := cmd.(*ForCmd)
+	if !ok {
+		t.Fatalf("expected *ForCmd, got %T", cmd)
+	}
+	if fc.VarName != "x" {
+		t.Errorf("expected var 'x', got %q", fc.VarName)
+	}
+	if len(fc.Words) != 3 {
+		t.Fatalf("expected 3 words, got %d", len(fc.Words))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if fc.Words[i].String() != want {
+			t.Errorf("word %d: expected %q, got %q", i, want, fc.Words[i].String())
+		}
+	}
+}
+
+func TestForEmptyList(t *testing.T) {
+	list := mustParse(t, "for x in; do echo $x; done")
+	fc := list.Entries[0].Pipeline.Cmds[0].(*ForCmd)
+	if len(fc.Words) != 0 {
+		t.Errorf("expected 0 words, got %d", len(fc.Words))
+	}
+}
+
+func TestForMissingIn(t *testing.T) {
+	tokens, _ := lexer.Lex("for x do echo $x; done")
+	_, err := Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'in'")
+	}
+}
+
+func TestForMissingDo(t *testing.T) {
+	tokens, _ := lexer.Lex("for x in a b c; echo $x; done")
+	_, err := Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'do'")
+	}
+}
+
+func TestForMissingDone(t *testing.T) {
+	tokens, _ := lexer.Lex("for x in a b c; do echo $x")
+	_, err := Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'done'")
+	}
+}
+
 // --- helpers ---
 
 func simpleCmd(t *testing.T, cmd Command) *SimpleCmd {

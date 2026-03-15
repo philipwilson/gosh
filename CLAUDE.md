@@ -43,4 +43,5 @@ Input → Lexer → []Token → Parser → AST → Expander → Executor
 - Process groups: each pipeline gets its own group; shell ignores SIGINT/SIGTSTP/SIGTTOU
 - Terminal control only when interactive (`isatty` via TIOCGPGRP probe)
 - Builtins (cd, pwd, echo, exit, export, unset, true, false) run in-process with redirect support
+- Debug builtins (`debug-tokens`, `debug-ast`, `debug-expanded`) toggle printing of tokens, pre-expansion AST, and post-expansion AST to stderr
 - `shellState` holds variables, export set, last exit status, and terminal info

@@ -149,6 +149,8 @@ func (p *parser) parseCommand() (Command, error) {
 		switch tok.Val {
 		case "if":
 			return p.parseIf()
+		case "while":
+			return p.parseWhile()
 		}
 	}
 	return p.parseSimpleCommand()
@@ -210,6 +212,29 @@ func (p *parser) parseIf() (*IfCmd, error) {
 	}
 
 	return cmd, nil
+}
+
+// parseWhile parses: 'while' list 'do' list 'done'
+func (p *parser) parseWhile() (*WhileCmd, error) {
+	p.next() // consume "while"
+
+	cond, err := p.parseList("do")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("do") {
+		return nil, fmt.Errorf("expected 'do', got %s", p.peek())
+	}
+
+	body, err := p.parseList("done")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("done") {
+		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
+	}
+
+	return &WhileCmd{Condition: cond, Body: body}, nil
 }
 
 // peekWord returns true if the next token is a WORD with the given value.

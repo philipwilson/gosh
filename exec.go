@@ -324,6 +324,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execSimple(state, c, stdin, stdout)
 	case *parser.IfCmd:
 		return execIf(state, c)
+	case *parser.WhileCmd:
+		return execWhile(state, c)
 	default:
 		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
 		return 1
@@ -353,6 +355,33 @@ func execIf(state *shellState, cmd *parser.IfCmd) int {
 	// No branch taken — exit status is 0 (bash behavior).
 	state.lastStatus = 0
 	return 0
+}
+
+// execWhile evaluates a while/do/done loop. The condition and body
+// are cloned before each expansion so that $VAR references in the
+// original AST are preserved for re-expansion on each iteration.
+func execWhile(state *shellState, cmd *parser.WhileCmd) int {
+	for {
+		cond := parser.CloneList(cmd.Condition)
+		expander.Expand(cond, state.lookup, state.cmdSubst)
+		execList(state, cond)
+
+		if state.lastStatus != 0 {
+			break
+		}
+
+		body := parser.CloneList(cmd.Body)
+		expander.Expand(body, state.lookup, state.cmdSubst)
+		execList(state, body)
+
+		if state.exitFlag {
+			return state.lastStatus
+		}
+	}
+
+	// Bash: while loop exit status is the status of the last body
+	// command executed, or 0 if the body never ran.
+	return state.lastStatus
 }
 
 // execSimple runs a single command (not in a pipeline).

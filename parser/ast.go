@@ -169,6 +169,86 @@ func (l *List) String() string {
 	return s + "]"
 }
 
+// --- Clone support ---
+// CloneList deep-copies a List so that in-place expansion (which
+// modifies WordPart.Text) doesn't corrupt the original AST. This
+// is needed for loops where the body is expanded on each iteration.
+
+func CloneList(l *List) *List {
+	if l == nil {
+		return nil
+	}
+	entries := make([]ListEntry, len(l.Entries))
+	for i, e := range l.Entries {
+		entries[i] = ListEntry{
+			Pipeline: clonePipeline(e.Pipeline),
+			Op:       e.Op,
+		}
+	}
+	return &List{Entries: entries}
+}
+
+func clonePipeline(p *Pipeline) *Pipeline {
+	cmds := make([]Command, len(p.Cmds))
+	for i, c := range p.Cmds {
+		cmds[i] = cloneCommand(c)
+	}
+	return &Pipeline{Cmds: cmds}
+}
+
+func cloneCommand(c Command) Command {
+	switch c := c.(type) {
+	case *SimpleCmd:
+		return cloneSimpleCmd(c)
+	case *IfCmd:
+		clauses := make([]IfClause, len(c.Clauses))
+		for i, cl := range c.Clauses {
+			clauses[i] = IfClause{
+				Condition: CloneList(cl.Condition),
+				Body:      CloneList(cl.Body),
+			}
+		}
+		return &IfCmd{Clauses: clauses, ElseBody: CloneList(c.ElseBody)}
+	case *WhileCmd:
+		return &WhileCmd{
+			Condition: CloneList(c.Condition),
+			Body:      CloneList(c.Body),
+		}
+	default:
+		return c
+	}
+}
+
+func cloneSimpleCmd(c *SimpleCmd) *SimpleCmd {
+	sc := &SimpleCmd{}
+	for _, a := range c.Assigns {
+		sc.Assigns = append(sc.Assigns, Assignment{
+			Name:  a.Name,
+			Value: cloneWord(a.Value),
+		})
+	}
+	for _, w := range c.Args {
+		sc.Args = append(sc.Args, cloneWord(w))
+	}
+	for _, r := range c.Redirects {
+		sc.Redirects = append(sc.Redirects, Redirect{
+			Fd:   r.Fd,
+			Type: r.Type,
+			File: cloneWord(r.File),
+		})
+	}
+	return sc
+}
+
+func cloneWord(w lexer.Word) lexer.Word {
+	if w == nil {
+		return nil
+	}
+	cw := make(lexer.Word, len(w))
+	copy(cw, w)
+	return cw
+}
+
 // --- IfCmd ---
 
 // IfClause is one condition+body pair (the "if" or an "elif").
@@ -181,6 +261,20 @@ type IfClause struct {
 type IfCmd struct {
 	Clauses  []IfClause // if + zero or more elif
 	ElseBody *List      // nil if no else branch
+}
+
+// --- WhileCmd ---
+
+// WhileCmd represents: while list; do list; done
+type WhileCmd struct {
+	Condition *List
+	Body      *List
+}
+
+func (c *WhileCmd) node()    {}
+func (c *WhileCmd) command() {}
+func (c *WhileCmd) String() string {
+	return "While[cond=" + c.Condition.String() + " body=" + c.Body.String() + "]"
 }
 
 func (c *IfCmd) node()    {}

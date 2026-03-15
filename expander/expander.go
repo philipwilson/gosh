@@ -59,6 +59,9 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
 		case *parser.IfCmd:
 			// IfCmd branches are expanded lazily by the executor,
 			// so each branch is only expanded if it's actually taken.
+		case *parser.WhileCmd:
+			// WhileCmd condition and body are expanded lazily on each
+			// iteration by the executor.
 		default:
 			_ = c
 		}

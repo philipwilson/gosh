@@ -402,6 +402,52 @@ func TestIfAfterSemicolon(t *testing.T) {
 	}
 }
 
+// --- While tests ---
+
+func TestWhileSimple(t *testing.T) {
+	list := mustParse(t, "while true; do echo yes; done")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	wc, ok := cmd.(*WhileCmd)
+	if !ok {
+		t.Fatalf("expected *WhileCmd, got %T", cmd)
+	}
+	condCmd := simpleCmd(t, wc.Condition.Entries[0].Pipeline.Cmds[0])
+	if condCmd.ArgStrings()[0] != "true" {
+		t.Errorf("expected condition 'true', got %q", condCmd.ArgStrings()[0])
+	}
+	bodyCmd := simpleCmd(t, wc.Body.Entries[0].Pipeline.Cmds[0])
+	got := bodyCmd.ArgStrings()
+	if len(got) != 2 || got[0] != "echo" || got[1] != "yes" {
+		t.Errorf("expected body [echo yes], got %v", got)
+	}
+}
+
+func TestWhileMissingDo(t *testing.T) {
+	tokens, _ := lexer.Lex("while true; done")
+	_, err := Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'do'")
+	}
+}
+
+func TestWhileMissingDone(t *testing.T) {
+	tokens, _ := lexer.Lex("while true; do echo yes")
+	_, err := Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing 'done'")
+	}
+}
+
+func TestWhileAfterCommand(t *testing.T) {
+	list := mustParse(t, "echo start; while false; do echo x; done")
+	if len(list.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(list.Entries))
+	}
+	if _, ok := list.Entries[1].Pipeline.Cmds[0].(*WhileCmd); !ok {
+		t.Fatalf("expected *WhileCmd, got %T", list.Entries[1].Pipeline.Cmds[0])
+	}
+}
+
 // --- helpers ---
 
 func simpleCmd(t *testing.T, cmd Command) *SimpleCmd {

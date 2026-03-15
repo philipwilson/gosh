@@ -26,6 +26,8 @@ type shellState struct {
 	shellPgid   int               // the shell's own process group ID
 	termFd      int               // file descriptor of the controlling terminal
 	exitFlag    bool              // set by exit builtin to stop the REPL
+	debugTokens bool              // print tokens before parsing
+	debugAST    bool              // print AST before expansion
 }
 
 func newShellState() *shellState {
@@ -102,8 +104,10 @@ var builtins = map[string]builtinFunc{
 	"exit":   builtinExit,
 	"export": builtinExport,
 	"unset":  builtinUnset,
-	"true":   builtinTrue,
-	"false":  builtinFalse,
+	"true":         builtinTrue,
+	"false":        builtinFalse,
+	"debug-tokens": builtinDebugTokens,
+	"debug-ast":    builtinDebugAST,
 }
 
 // builtinCd changes the shell's working directory.
@@ -214,6 +218,28 @@ func builtinUnset(state *shellState, args []string, stdout *os.File) int {
 func builtinTrue(state *shellState, args []string, stdout *os.File) int  { return 0 }
 func builtinFalse(state *shellState, args []string, stdout *os.File) int { return 1 }
 
+// builtinDebugTokens toggles printing of the token stream before parsing.
+func builtinDebugTokens(state *shellState, args []string, stdout *os.File) int {
+	state.debugTokens = !state.debugTokens
+	if state.debugTokens {
+		fmt.Fprintln(stdout, "token debugging on")
+	} else {
+		fmt.Fprintln(stdout, "token debugging off")
+	}
+	return 0
+}
+
+// builtinDebugAST toggles printing of the AST before expansion.
+func builtinDebugAST(state *shellState, args []string, stdout *os.File) int {
+	state.debugAST = !state.debugAST
+	if state.debugAST {
+		fmt.Fprintln(stdout, "AST debugging on")
+	} else {
+		fmt.Fprintln(stdout, "AST debugging off")
+	}
+	return 0
+}
+
 // --- Main loop ---
 
 func main() {
@@ -239,10 +265,20 @@ func main() {
 			continue
 		}
 
+		if state.debugTokens {
+			for _, tok := range tokens {
+				fmt.Fprintf(os.Stderr, "  %s\n", tok)
+			}
+		}
+
 		list, err := parser.Parse(tokens)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 			continue
+		}
+
+		if state.debugAST {
+			fmt.Fprintf(os.Stderr, "  %s\n", list)
 		}
 
 		expander.Expand(list, state.lookup)

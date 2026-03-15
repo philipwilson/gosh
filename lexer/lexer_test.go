@@ -565,6 +565,24 @@ func TestArithSubstMixedWithText(t *testing.T) {
 	)
 }
 
+func TestLParen(t *testing.T) {
+	tokens, err := Lex("greet() { echo hi; }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD,   // greet
+		TOKEN_LPAREN, // (
+		TOKEN_RPAREN, // )
+		TOKEN_WORD,   // {
+		TOKEN_WORD,   // echo
+		TOKEN_WORD,   // hi
+		TOKEN_SEMI,   // ;
+		TOKEN_WORD,   // }
+		TOKEN_EOF,
+	)
+}
+
 func TestArithSubstUnterminated(t *testing.T) {
 	_, err := Lex("echo $((1+2)")
 	if err == nil {

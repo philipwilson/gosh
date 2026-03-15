@@ -24,28 +24,32 @@ var version = "dev"
 // shellState holds the shell's mutable state: variables, export
 // set, last exit status, and terminal control info.
 type shellState struct {
-	vars          map[string]string // shell variables
-	exported      map[string]bool   // which variables are exported to children
-	lastStatus    int               // $? — exit status of last command
-	interactive   bool              // true if stdin is a terminal
-	shellPgid     int               // the shell's own process group ID
-	termFd        int               // file descriptor of the controlling terminal
-	exitFlag      bool              // set by exit builtin to stop the REPL
-	breakFlag     bool              // set by break builtin to exit loop
-	continueFlag  bool              // set by continue builtin to skip to next iteration
-	loopDepth     int               // nesting depth of for/while loops
-	jobs          []*job            // job table for background/stopped jobs
-	nextJobID     int               // next job number to assign
-	debugTokens   bool              // print tokens before parsing
-	debugAST      bool              // print AST before expansion
-	debugExpanded bool              // print AST after expansion
-	ed            *editor.Editor    // line editor (nil if non-interactive)
+	vars             map[string]string    // shell variables
+	exported         map[string]bool      // which variables are exported to children
+	funcs            map[string]*parser.List // user-defined functions
+	lastStatus       int                  // $? — exit status of last command
+	interactive      bool                 // true if stdin is a terminal
+	shellPgid        int                  // the shell's own process group ID
+	termFd           int                  // file descriptor of the controlling terminal
+	exitFlag         bool                 // set by exit builtin to stop the REPL
+	breakFlag        bool                 // set by break builtin to exit loop
+	continueFlag     bool                 // set by continue builtin to skip to next iteration
+	returnFlag       bool                 // set by return builtin to exit function
+	loopDepth        int                  // nesting depth of for/while loops
+	positionalParams []string             // $1, $2, ... for function arguments
+	jobs             []*job               // job table for background/stopped jobs
+	nextJobID        int                  // next job number to assign
+	debugTokens      bool                 // print tokens before parsing
+	debugAST         bool                 // print AST before expansion
+	debugExpanded    bool                 // print AST after expansion
+	ed               *editor.Editor       // line editor (nil if non-interactive)
 }
 
 func newShellState() *shellState {
 	s := &shellState{
 		vars:     make(map[string]string),
 		exported: make(map[string]bool),
+		funcs:    make(map[string]*parser.List),
 		termFd:   int(os.Stdin.Fd()),
 	}
 
@@ -89,7 +93,20 @@ func (s *shellState) lookup(name string) string {
 		return strconv.Itoa(s.lastStatus)
 	case "$":
 		return strconv.Itoa(os.Getpid())
+	case "#":
+		return strconv.Itoa(len(s.positionalParams))
+	case "@", "*":
+		return strings.Join(s.positionalParams, " ")
+	case "0":
+		return "gosh"
 	default:
+		// Positional parameters: $1, $2, ..., ${10}, etc.
+		if n, err := strconv.Atoi(name); err == nil && n >= 1 {
+			if n <= len(s.positionalParams) {
+				return s.positionalParams[n-1]
+			}
+			return ""
+		}
 		return s.vars[name]
 	}
 }

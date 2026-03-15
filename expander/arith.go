@@ -86,6 +86,17 @@ func tokenizeArith(expr string) ([]arithToken, error) {
 					i++
 				}
 				tokens = append(tokens, arithToken{aTokIdent, string(runes[start:i])})
+			} else if i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+				// Positional parameter: $1, $2, etc.
+				start := i
+				for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+					i++
+				}
+				tokens = append(tokens, arithToken{aTokIdent, string(runes[start:i])})
+			} else if i < len(runes) && (runes[i] == '#' || runes[i] == '@' || runes[i] == '*') {
+				// Special variables: $#, $@, $*
+				tokens = append(tokens, arithToken{aTokIdent, string(runes[i])})
+				i++
 			} else {
 				return nil, fmt.Errorf("invalid $ in arithmetic expression")
 			}

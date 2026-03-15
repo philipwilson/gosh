@@ -32,6 +32,7 @@ var builtins = map[string]builtinFunc{
 	"bg":              builtinBg,
 	"break":           builtinBreak,
 	"continue":        builtinContinue,
+	"return":          builtinReturn,
 	"test":            builtinTest,
 	"[":               builtinBracket,
 	"debug-tokens":    builtinDebugTokens,
@@ -149,6 +150,22 @@ func builtinContinue(state *shellState, args []string, stdout *os.File) int {
 	}
 	state.continueFlag = true
 	return 0
+}
+
+// builtinReturn exits the current function with an optional status.
+func builtinReturn(state *shellState, args []string, stdout *os.File) int {
+	status := state.lastStatus
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: return: %s: numeric argument required\n", args[0])
+			return 2
+		}
+		status = n
+	}
+	state.returnFlag = true
+	state.lastStatus = status
+	return status
 }
 
 // builtinExport marks variables for export to child processes.

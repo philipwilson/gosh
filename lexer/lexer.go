@@ -87,6 +87,7 @@ const (
 	TOKEN_OR                     // ||
 	TOKEN_AMP                    // & (background)
 	TOKEN_DSEMI                  // ;; (case clause terminator)
+	TOKEN_LPAREN                 // ( (function definition)
 	TOKEN_RPAREN                 // ) (case pattern terminator)
 	TOKEN_EOF                    // end of input
 )
@@ -115,6 +116,8 @@ func (t TokenType) String() string {
 		return "AMP"
 	case TOKEN_DSEMI:
 		return "DSEMI"
+	case TOKEN_LPAREN:
+		return "LPAREN"
 	case TOKEN_RPAREN:
 		return "RPAREN"
 	case TOKEN_EOF:
@@ -210,7 +213,7 @@ func (l *lexer) lex() ([]Token, error) {
 			last := tokens[len(tokens)-1].Type
 			if last == TOKEN_SEMI || last == TOKEN_PIPE || last == TOKEN_AND ||
 				last == TOKEN_OR || last == TOKEN_AMP || last == TOKEN_DSEMI ||
-				last == TOKEN_RPAREN {
+				last == TOKEN_LPAREN || last == TOKEN_RPAREN {
 				continue
 			}
 			tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
@@ -241,6 +244,10 @@ func (l *lexer) lex() ([]Token, error) {
 			} else {
 				tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
 			}
+
+		case ch == '(':
+			l.next()
+			tokens = append(tokens, Token{Type: TOKEN_LPAREN, Fd: -1})
 
 		case ch == ')':
 			l.next()
@@ -676,5 +683,5 @@ func (l *lexer) readArithSubst() (string, error) {
 }
 
 func isOperator(ch rune) bool {
-	return ch == '|' || ch == '&' || ch == ';' || ch == '>' || ch == '<' || ch == ')'
+	return ch == '|' || ch == '&' || ch == ';' || ch == '>' || ch == '<' || ch == '(' || ch == ')'
 }

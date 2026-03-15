@@ -67,6 +67,8 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
 			// ForCmd words and body are expanded lazily by the executor.
 		case *parser.CaseCmd:
 			// CaseCmd word, patterns, and body are expanded lazily by the executor.
+		case *parser.FuncDef:
+			// FuncDef body is stored and expanded when the function is called.
 		default:
 			_ = c
 		}
@@ -380,6 +382,18 @@ func expandDollar(text string, lookup LookupFunc) string {
 
 		case runes[i] == '$':
 			result.WriteString(lookup("$"))
+			i++
+
+		case runes[i] == '#':
+			result.WriteString(lookup("#"))
+			i++
+
+		case runes[i] == '@' || runes[i] == '*':
+			result.WriteString(lookup(string(runes[i])))
+			i++
+
+		case runes[i] >= '0' && runes[i] <= '9':
+			result.WriteString(lookup(string(runes[i])))
 			i++
 
 		case isNameStart(runes[i]):

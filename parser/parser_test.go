@@ -600,6 +600,60 @@ func TestCaseMissingIn(t *testing.T) {
 	}
 }
 
+func TestFuncDefSimple(t *testing.T) {
+	tokens, err := lexer.Lex("greet() { echo hello; }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(list.Entries))
+	}
+	fd, ok := list.Entries[0].Pipeline.Cmds[0].(*FuncDef)
+	if !ok {
+		t.Fatalf("expected FuncDef, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if fd.Name != "greet" {
+		t.Errorf("expected name 'greet', got %q", fd.Name)
+	}
+	if len(fd.Body.Entries) != 1 {
+		t.Fatalf("expected 1 body entry, got %d", len(fd.Body.Entries))
+	}
+	expectArgs(t, fd.Body.Entries[0].Pipeline.Cmds[0], "echo", "hello")
+}
+
+func TestFuncDefMultiLine(t *testing.T) {
+	tokens, err := lexer.Lex("greet() {\n  echo hello\n  echo world\n}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd, ok := list.Entries[0].Pipeline.Cmds[0].(*FuncDef)
+	if !ok {
+		t.Fatalf("expected FuncDef, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if len(fd.Body.Entries) != 2 {
+		t.Fatalf("expected 2 body entries, got %d", len(fd.Body.Entries))
+	}
+}
+
+func TestFuncDefMissingBrace(t *testing.T) {
+	tokens, err := lexer.Lex("greet() { echo hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Parse(tokens)
+	if err == nil {
+		t.Fatal("expected error for missing '}'")
+	}
+}
+
 func expectArgs(t *testing.T, cmd Command, want ...string) {
 	t.Helper()
 	sc := simpleCmd(t, cmd)

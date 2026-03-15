@@ -40,7 +40,7 @@ func execList(state *shellState, list *parser.List) {
 		} else {
 			execPipeline(state, entry.Pipeline)
 		}
-		if state.exitFlag || state.breakFlag || state.continueFlag {
+		if state.exitFlag || state.breakFlag || state.continueFlag || state.returnFlag {
 			return
 		}
 	}
@@ -332,6 +332,9 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execFor(state, c)
 	case *parser.CaseCmd:
 		return execCase(state, c)
+	case *parser.FuncDef:
+		state.funcs[c.Name] = c.Body
+		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
 		return 1
@@ -384,7 +387,7 @@ func execWhile(state *shellState, cmd *parser.WhileCmd) int {
 		expander.Expand(body, state.lookup, state.cmdSubst)
 		execList(state, body)
 
-		if state.exitFlag || state.breakFlag {
+		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
 				state.breakFlag = false
 			}
@@ -433,7 +436,7 @@ func execFor(state *shellState, cmd *parser.ForCmd) int {
 		expander.Expand(body, state.lookup, state.cmdSubst)
 		execList(state, body)
 
-		if state.exitFlag || state.breakFlag {
+		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
 				state.breakFlag = false
 			}
@@ -499,6 +502,33 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 
 	args := cmd.ArgStrings()
 
+	// Check for user-defined functions.
+	if body, ok := state.funcs[args[0]]; ok {
+		saved := make(map[string]savedVar, len(cmd.Assigns))
+		for _, a := range cmd.Assigns {
+			old, exists := state.vars[a.Name]
+			saved[a.Name] = savedVar{value: old, exists: exists}
+			state.setVar(a.Name, a.Value.String())
+		}
+
+		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		fds, opened, err := applyRedirects(cmd, fds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			restoreVars(state, saved)
+			return 1
+		}
+		_ = fds // redirects applied to child via function body
+
+		status := execFunction(state, body, args[1:])
+		for _, f := range opened {
+			f.Close()
+		}
+
+		restoreVars(state, saved)
+		return status
+	}
+
 	// Check for builtins.
 	if fn, ok := builtins[args[0]]; ok {
 		// Per-command assignments are temporary for builtins:
@@ -558,6 +588,23 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	}
 
 	return res.status
+}
+
+// execFunction runs a user-defined function body with positional params.
+func execFunction(state *shellState, body *parser.List, args []string) int {
+	// Save and set positional parameters.
+	savedParams := state.positionalParams
+	state.positionalParams = args
+
+	cloned := parser.CloneList(body)
+	expander.Expand(cloned, state.lookup, state.cmdSubst)
+	execList(state, cloned)
+
+	status := state.lastStatus
+	state.returnFlag = false
+	state.positionalParams = savedParams
+
+	return status
 }
 
 // savedVar records a variable's previous state for restoration.

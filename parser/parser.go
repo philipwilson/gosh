@@ -12,7 +12,7 @@ import (
 var reservedWords = map[string]bool{
 	"then": true, "elif": true, "else": true, "fi": true,
 	"do": true, "done": true, "in": true,
-	"esac": true,
+	"esac": true, "}": true,
 }
 
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
@@ -168,6 +168,11 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseFor()
 		case "case":
 			return p.parseCase()
+		default:
+			// Check for function definition: WORD ( ) { ... }
+			if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == lexer.TOKEN_LPAREN {
+				return p.parseFuncDef()
+			}
 		}
 	}
 	return p.parseSimpleCommand()
@@ -382,6 +387,33 @@ func (p *parser) parseCase() (*CaseCmd, error) {
 	}
 
 	return cmd, nil
+}
+
+// parseFuncDef parses: WORD '(' ')' '{' list '}'
+func (p *parser) parseFuncDef() (*FuncDef, error) {
+	name := p.next().Val // consume function name
+	p.next()             // consume (
+
+	if p.peek().Type != lexer.TOKEN_RPAREN {
+		return nil, fmt.Errorf("expected ')' in function definition, got %s", p.peek())
+	}
+	p.next() // consume )
+
+	if !p.peekWord("{") {
+		return nil, fmt.Errorf("expected '{' after %s(), got %s", name, p.peek())
+	}
+	p.next() // consume {
+
+	body, err := p.parseList("}")
+	if err != nil {
+		return nil, err
+	}
+
+	if !p.expectWord("}") {
+		return nil, fmt.Errorf("expected '}', got %s", p.peek())
+	}
+
+	return &FuncDef{Name: name, Body: body}, nil
 }
 
 // peekWord returns true if the next token is a WORD with the given value.

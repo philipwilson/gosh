@@ -350,6 +350,28 @@ func mustParse(t *testing.T, input string) *parser.List {
 	return list
 }
 
+func TestExpandPositionalParams(t *testing.T) {
+	lookup := func(name string) string {
+		switch name {
+		case "1":
+			return "hello"
+		case "2":
+			return "world"
+		case "#":
+			return "2"
+		case "@", "*":
+			return "hello world"
+		case "0":
+			return "gosh"
+		}
+		return ""
+	}
+
+	list := mustParse(t, `echo $1 $2 $# "$@" $0`)
+	Expand(list, lookup, nil)
+	expectArgs(t, list, 0, "echo", "hello", "world", "2", "hello world", "gosh")
+}
+
 func simpleCmd(t *testing.T, cmd parser.Command) *parser.SimpleCmd {
 	t.Helper()
 	sc, ok := cmd.(*parser.SimpleCmd)

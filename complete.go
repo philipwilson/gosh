@@ -53,6 +53,14 @@ func (s *shellState) commandCompletions(prefix string) []string {
 		}
 	}
 
+	// User-defined functions.
+	for name := range s.funcs {
+		if strings.HasPrefix(name, prefix) && !seen[name] {
+			seen[name] = true
+			results = append(results, name+" ")
+		}
+	}
+
 	// PATH executables.
 	for _, match := range s.executablesOnPath(prefix) {
 		if !seen[match] {

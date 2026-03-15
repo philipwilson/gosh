@@ -240,6 +240,11 @@ func cloneCommand(c Command) Command {
 			Word:    CloneWord(c.Word),
 			Clauses: clauses,
 		}
+	case *FuncDef:
+		return &FuncDef{
+			Name: c.Name,
+			Body: CloneList(c.Body),
+		}
 	default:
 		return c
 	}
@@ -350,6 +355,20 @@ func (c *CaseCmd) String() string {
 		s += " (" + strings.Join(pats, "|") + ") " + cl.Body.String()
 	}
 	return s + "]"
+}
+
+// --- FuncDef ---
+
+// FuncDef represents a function definition: fname() { list; }
+type FuncDef struct {
+	Name string
+	Body *List
+}
+
+func (c *FuncDef) node()    {}
+func (c *FuncDef) command() {}
+func (c *FuncDef) String() string {
+	return "FuncDef[" + c.Name + " " + c.Body.String() + "]"
 }
 
 func (c *IfCmd) node()    {}

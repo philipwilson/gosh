@@ -3,6 +3,8 @@ package expander
 import (
 	"gosh/lexer"
 	"gosh/parser"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -17,6 +19,8 @@ func testLookup(name string) string {
 	}
 	return vars[name]
 }
+
+// --- Variable expansion tests ---
 
 func TestExpandUnquoted(t *testing.T) {
 	list := mustParse(t, "echo $HOME")
@@ -112,10 +116,113 @@ func TestExpandRedirectFilename(t *testing.T) {
 }
 
 func TestExpandMixedQuoting(t *testing.T) {
-	// he"$USER"'$HOME' → healice$HOME
 	list := mustParse(t, `he"$USER"'$HOME'`)
 	Expand(list, testLookup)
 	expectArgs(t, list, 0, "healice$HOME")
+}
+
+// --- Glob expansion tests ---
+
+// setupGlobDir creates a temp directory with known files for glob testing.
+func setupGlobDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"foo.go", "bar.go", "baz.txt", "README.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestGlobStar(t *testing.T) {
+	dir := setupGlobDir(t)
+	list := mustParse(t, "echo "+dir+"/*.go")
+	Expand(list, testLookup)
+
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	// Should expand to bar.go and foo.go (sorted)
+	args := cmd.ArgStrings()
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args (echo + 2 files), got %d: %v", len(args), args)
+	}
+	if args[1] != filepath.Join(dir, "bar.go") {
+		t.Errorf("expected bar.go, got %s", args[1])
+	}
+	if args[2] != filepath.Join(dir, "foo.go") {
+		t.Errorf("expected foo.go, got %s", args[2])
+	}
+}
+
+func TestGlobQuestion(t *testing.T) {
+	dir := setupGlobDir(t)
+	list := mustParse(t, "echo "+dir+"/ba?.go")
+	Expand(list, testLookup)
+
+	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args (echo + bar.go), got %d: %v", len(args), args)
+	}
+	if args[1] != filepath.Join(dir, "bar.go") {
+		t.Errorf("expected bar.go, got %s", args[1])
+	}
+}
+
+func TestGlobNoMatch(t *testing.T) {
+	dir := setupGlobDir(t)
+	pattern := dir + "/*.rs"
+	list := mustParse(t, "echo "+pattern)
+	Expand(list, testLookup)
+
+	// No .rs files exist — glob should keep the pattern as-is.
+	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
+	}
+	if args[1] != pattern {
+		t.Errorf("expected pattern kept as-is %q, got %q", pattern, args[1])
+	}
+}
+
+func TestGlobQuotedStar(t *testing.T) {
+	dir := setupGlobDir(t)
+	// Quoted * should NOT glob-expand.
+	list := mustParse(t, `echo "`+dir+`/*.go"`)
+	Expand(list, testLookup)
+
+	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
+	}
+	if args[1] != dir+"/*.go" {
+		t.Errorf("expected literal %s/*.go, got %s", dir, args[1])
+	}
+}
+
+func TestGlobSingleQuotedStar(t *testing.T) {
+	dir := setupGlobDir(t)
+	list := mustParse(t, "echo '"+dir+"/*.go'")
+	Expand(list, testLookup)
+
+	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
+	}
+	if args[1] != dir+"/*.go" {
+		t.Errorf("expected literal pattern, got %s", args[1])
+	}
+}
+
+func TestGlobAllFiles(t *testing.T) {
+	dir := setupGlobDir(t)
+	list := mustParse(t, "echo "+dir+"/*")
+	Expand(list, testLookup)
+
+	args := list.Entries[0].Pipeline.Cmds[0].ArgStrings()
+	// echo + 4 files
+	if len(args) != 5 {
+		t.Fatalf("expected 5 args (echo + 4 files), got %d: %v", len(args), args)
+	}
 }
 
 // --- helpers ---

@@ -15,30 +15,32 @@ go test ./lexer/ -v        # run one package's tests
 go test ./lexer/ -run TestSingleQuotes  # run a single test
 ```
 
-Test interactively: `echo -e 'echo hello | tr a-z A-Z\nexit' | ./gosh`
+Test interactively: `printf 'echo hello | tr a-z A-Z\nexit\n' | ./gosh`
 
 ## Architecture
 
 Shell input flows through four phases, each with a clean boundary:
 
 ```
-Input → Lexer → []Token → Parser → AST → [Expander] → Executor
+Input → Lexer → []Token → Parser → AST → Expander → Executor
 ```
 
-- **Lexer** (`lexer/`): Converts raw input to tokens. Handles single quotes (literal), double quotes (with `\` escapes for `" \ $ \``), backslash escapes, and operator recognition (`|`, `<`, `>`, `>>`, `;`, `&&`, `||`).
+- **Lexer** (`lexer/`): Converts raw input to tokens. Handles single quotes (literal), double quotes (with `\` escapes for `" \ $ \``), backslash escapes, and operator recognition (`|`, `<`, `>`, `>>`, `;`, `&&`, `||`). Each WORD token carries `Parts []WordPart` preserving quoting context (`Unquoted`, `SingleQuoted`, `DoubleQuoted`) for the expander.
 
-- **Parser** (`parser/`): Recursive descent parser producing an AST. Grammar: `list → pipeline ((; | && | ||) pipeline)*`, `pipeline → command (| command)*`, `command → (word | redirect)+`. AST nodes: `List` (sequence with operators), `Pipeline` (pipe-connected commands), `SimpleCmd` (args + redirections).
+- **Parser** (`parser/`): Recursive descent parser producing an AST. Grammar: `list → pipeline ((; | && | ||) pipeline)*`, `pipeline → command (| command)*`, `command → (assign)* (word | redirect)+`. AST nodes: `List` (sequence with operators), `Pipeline` (pipe-connected commands), `SimpleCmd` (assignments + args as `[]lexer.Word` + redirections). Recognizes `NAME=VALUE` assignments before command words.
 
-- **Executor** (`main.go`): Walks the AST. Spawns processes via `os.StartProcess` (not `os/exec.Cmd`). Wires pipes with `os.Pipe()`. Applies `<`, `>`, `>>` redirections by opening files and passing them as the child's stdin/stdout. All pipe fds are closed in the parent after children start to ensure EOF propagation.
+- **Expander** (`expander/`): Two-phase expansion on the AST: (1) variable expansion (`$VAR`, `${VAR}`, `$?`, `$$`) respecting quoting — no expansion in SingleQuoted parts; (2) glob expansion (`*`, `?`, `[...]`) on unquoted args only, using `filepath.Glob`. Builds glob patterns that escape metacharacters in quoted parts.
 
-## Design Principles
+- **Executor** (`main.go`): Walks the AST. Spawns processes via `os.StartProcess` with `SysProcAttr{Setpgid: true}` for process group isolation. Wires pipes with `os.Pipe()`. Applies `<`, `>`, `>>` redirections. Manages terminal foreground group via `tcsetpgrp` (TIOCSPGRP ioctl). Runs builtins in-process for standalone commands; in pipelines they fall through to external lookup. Implements `&&`/`||` short-circuit evaluation.
 
-- Use `os.StartProcess` / `syscall` for process management, not `os/exec.Cmd` — the plumbing should be visible
-- `exec.LookPath` is currently used for PATH resolution (will be replaced with manual walk)
-- Phases are separate packages with explicit data passed between them (tokens, AST nodes)
+## Key Design Details
+
+- `os.StartProcess` / `syscall` for process management, not `os/exec.Cmd` — the plumbing should be visible
+- `exec.LookPath` is used for PATH resolution
+- Phases are separate packages with explicit data passed between them (tokens, AST nodes with `lexer.Word` parts)
 - Redirections override pipe defaults (e.g., `sort < file | head` uses file as sort's stdin)
-- Exit status follows bash convention: last command in pipeline determines status
-
-## Planned Milestones
-
-M1–M5 (done): REPL, lexer, parser, pipes, redirections. Remaining: M6 (variables/environment), M7 (glob expansion), M8 (signals/process groups), M9 (builtins), M10 (control flow: `&&`, `||`, `;` semantics).
+- Exit status: last pipeline command determines status; signal kills → 128+signum
+- Process groups: each pipeline gets its own group; shell ignores SIGINT/SIGTSTP/SIGTTOU
+- Terminal control only when interactive (`isatty` via TIOCGPGRP probe)
+- Builtins (cd, pwd, echo, exit, export, unset, true, false) run in-process with redirect support
+- `shellState` holds variables, export set, last exit status, and terminal info

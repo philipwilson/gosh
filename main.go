@@ -25,6 +25,7 @@ type shellState struct {
 	interactive bool              // true if stdin is a terminal
 	shellPgid   int               // the shell's own process group ID
 	termFd      int               // file descriptor of the controlling terminal
+	exitFlag    bool              // set by exit builtin to stop the REPL
 }
 
 func newShellState() *shellState {
@@ -34,7 +35,6 @@ func newShellState() *shellState {
 		termFd:   int(os.Stdin.Fd()),
 	}
 
-	// Import all environment variables.
 	for _, entry := range os.Environ() {
 		if k, v, ok := strings.Cut(entry, "="); ok {
 			s.vars[k] = v
@@ -42,19 +42,10 @@ func newShellState() *shellState {
 		}
 	}
 
-	// Check if we're running interactively (stdin is a terminal).
 	s.interactive = isatty(s.termFd)
 
 	if s.interactive {
 		s.shellPgid = syscall.Getpgrp()
-
-		// Ignore job-control signals so they go to the foreground
-		// process group, not the shell.
-		//
-		// SIGINT  (Ctrl-C)  — should kill foreground job, not shell
-		// SIGTSTP (Ctrl-Z)  — should stop foreground job, not shell
-		// SIGTTOU           — shell may write to terminal while in
-		//                     background; ignore to prevent stopping
 		signal.Ignore(syscall.SIGINT, syscall.SIGTSTP, syscall.SIGTTOU)
 	}
 
@@ -88,6 +79,143 @@ func (s *shellState) exportVar(name string) {
 	s.exported[name] = true
 }
 
+func (s *shellState) unsetVar(name string) {
+	delete(s.vars, name)
+	delete(s.exported, name)
+}
+
+// --- Builtins ---
+
+// builtinFunc is the signature for all builtin commands.
+// stdout is the file to write output to (may be redirected).
+type builtinFunc func(state *shellState, args []string, stdout *os.File) int
+
+// builtins maps command names to their builtin implementations.
+// These run in the shell process (not forked), which is required
+// for cd (changes shell's cwd), exit (stops the REPL), export
+// (modifies shell variables), and unset. echo/pwd/true/false are
+// builtins for convenience and performance.
+var builtins = map[string]builtinFunc{
+	"cd":     builtinCd,
+	"pwd":    builtinPwd,
+	"echo":   builtinEcho,
+	"exit":   builtinExit,
+	"export": builtinExport,
+	"unset":  builtinUnset,
+	"true":   builtinTrue,
+	"false":  builtinFalse,
+}
+
+// builtinCd changes the shell's working directory.
+// With no arguments, changes to $HOME.
+func builtinCd(state *shellState, args []string, stdout *os.File) int {
+	var dir string
+	switch len(args) {
+	case 0:
+		dir = state.vars["HOME"]
+		if dir == "" {
+			fmt.Fprintln(os.Stderr, "gosh: cd: HOME not set")
+			return 1
+		}
+	case 1:
+		dir = args[0]
+	default:
+		fmt.Fprintln(os.Stderr, "gosh: cd: too many arguments")
+		return 1
+	}
+
+	if err := syscall.Chdir(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: cd: %s: %v\n", dir, err)
+		return 1
+	}
+
+	// Update PWD to reflect the new directory.
+	if wd, err := os.Getwd(); err == nil {
+		state.setVar("PWD", wd)
+	}
+	return 0
+}
+
+// builtinPwd prints the current working directory.
+func builtinPwd(state *shellState, args []string, stdout *os.File) int {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: pwd: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, wd)
+	return 0
+}
+
+// builtinEcho prints its arguments separated by spaces.
+// Supports -n to suppress the trailing newline.
+func builtinEcho(state *shellState, args []string, stdout *os.File) int {
+	suppressNewline := false
+	start := 0
+	if len(args) > 0 && args[0] == "-n" {
+		suppressNewline = true
+		start = 1
+	}
+	fmt.Fprint(stdout, strings.Join(args[start:], " "))
+	if !suppressNewline {
+		fmt.Fprintln(stdout)
+	}
+	return 0
+}
+
+// builtinExit sets the exit flag to stop the REPL.
+// Optional argument is the exit status (default 0).
+func builtinExit(state *shellState, args []string, stdout *os.File) int {
+	status := 0
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: exit: %s: numeric argument required\n", args[0])
+			status = 2
+		} else {
+			status = n
+		}
+	}
+	state.exitFlag = true
+	state.lastStatus = status
+	return status
+}
+
+// builtinExport marks variables for export to child processes.
+// Supports "export VAR" and "export VAR=VALUE".
+func builtinExport(state *shellState, args []string, stdout *os.File) int {
+	if len(args) == 0 {
+		// With no args, print all exported variables (sorted would
+		// be nicer, but keeping it simple).
+		for k := range state.exported {
+			fmt.Fprintf(stdout, "export %s=%q\n", k, state.vars[k])
+		}
+		return 0
+	}
+	for _, arg := range args {
+		if name, value, ok := strings.Cut(arg, "="); ok {
+			state.setVar(name, value)
+			state.exportVar(name)
+		} else {
+			state.exportVar(arg)
+		}
+	}
+	return 0
+}
+
+// builtinUnset removes variables from the shell.
+func builtinUnset(state *shellState, args []string, stdout *os.File) int {
+	for _, name := range args {
+		state.unsetVar(name)
+	}
+	return 0
+}
+
+func builtinTrue(state *shellState, args []string, stdout *os.File) int  { return 0 }
+func builtinFalse(state *shellState, args []string, stdout *os.File) int { return 1 }
+
+// --- Main loop ---
+
 func main() {
 	state := newShellState()
 	scanner := bufio.NewScanner(os.Stdin)
@@ -105,10 +233,6 @@ func main() {
 			continue
 		}
 
-		if line == "exit" {
-			break
-		}
-
 		tokens, err := lexer.Lex(line)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
@@ -123,19 +247,26 @@ func main() {
 
 		expander.Expand(list, state.lookup)
 		execList(state, list)
+
+		if state.exitFlag {
+			break
+		}
 	}
+
+	os.Exit(state.lastStatus)
 }
+
+// --- Execution ---
 
 func execList(state *shellState, list *parser.List) {
 	for _, entry := range list.Entries {
 		execPipeline(state, entry.Pipeline)
+		if state.exitFlag {
+			return
+		}
 	}
 }
 
-// execPipeline runs a pipeline, placing all its processes in a
-// single process group. If interactive, the pipeline's process
-// group is given the terminal (foreground) so that signals like
-// SIGINT are delivered to it, not to the shell.
 func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	n := len(pipe.Cmds)
 
@@ -143,6 +274,11 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 		state.lastStatus = execSimple(state, pipe.Cmds[0], os.Stdin, os.Stdout)
 		return
 	}
+
+	// In a pipeline, builtins fall through to external command
+	// lookup. Running a builtin in a pipeline would require forking
+	// (to wire its output to a pipe), which defeats the purpose.
+	// External /bin/echo, /bin/pwd etc. handle this case.
 
 	type pipePair struct{ r, w *os.File }
 	pipes := make([]pipePair, n-1)
@@ -160,10 +296,6 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 		files []*os.File
 	}
 	infos := make([]procInfo, n)
-
-	// pgid for this pipeline: set to 0 for the first process
-	// (creates a new group), then set to the first process's PID
-	// for subsequent processes (they join the group).
 	pgid := 0
 
 	for i, cmd := range pipe.Cmds {
@@ -186,11 +318,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 
 		if i == 0 && proc != nil {
 			pgid = proc.Pid
-			// Also call setpgid from the parent to avoid a race
-			// between the parent and child.
 			syscall.Setpgid(proc.Pid, proc.Pid)
-
-			// Give the pipeline's process group the terminal.
 			if state.interactive {
 				tcsetpgrp(state.termFd, pgid)
 			}
@@ -215,15 +343,16 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 		}
 	}
 
-	// Take back the terminal for the shell.
 	if state.interactive {
 		tcsetpgrp(state.termFd, state.shellPgid)
 	}
 }
 
-// execSimple runs a single command. Returns exit status.
+// execSimple runs a single command (not in a pipeline).
+// Builtins are handled here; in pipelines they fall through
+// to external commands.
 func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) int {
-	// Handle assignment-only commands (no args): just set variables.
+	// Handle assignment-only commands: just set variables.
 	if len(cmd.Args) == 0 {
 		for _, a := range cmd.Assigns {
 			state.setVar(a.Name, a.Value.String())
@@ -231,12 +360,30 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		return 0
 	}
 
-	// Handle "export" builtin.
 	args := cmd.ArgStrings()
-	if args[0] == "export" {
-		return builtinExport(state, args[1:])
+
+	// Check for builtins.
+	if fn, ok := builtins[args[0]]; ok {
+		// Apply any per-command variable assignments.
+		for _, a := range cmd.Assigns {
+			state.setVar(a.Name, a.Value.String())
+		}
+
+		// Apply redirections so builtins can write to files.
+		stdin, stdout, opened, err := applyRedirects(cmd, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			return 1
+		}
+		_ = stdin // builtins don't currently read from stdin
+		status := fn(state, args[1:], stdout)
+		for _, f := range opened {
+			f.Close()
+		}
+		return status
 	}
 
+	// External command.
 	proc, opened := startProcess(state, cmd, stdin, stdout, 0)
 	if proc == nil {
 		return 127
@@ -245,7 +392,6 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	pgid := proc.Pid
 	syscall.Setpgid(pgid, pgid)
 
-	// Give the child's process group the terminal.
 	if state.interactive {
 		tcsetpgrp(state.termFd, pgid)
 	}
@@ -255,7 +401,6 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		f.Close()
 	}
 
-	// Take back the terminal.
 	if state.interactive {
 		tcsetpgrp(state.termFd, state.shellPgid)
 	}
@@ -263,17 +408,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	return status
 }
 
-func builtinExport(state *shellState, args []string) int {
-	for _, arg := range args {
-		if name, value, ok := strings.Cut(arg, "="); ok {
-			state.setVar(name, value)
-			state.exportVar(name)
-		} else {
-			state.exportVar(arg)
-		}
-	}
-	return 0
-}
+// --- Process management ---
 
 func applyRedirects(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.File, *os.File, []*os.File, error) {
 	var opened []*os.File
@@ -320,9 +455,6 @@ func applyRedirects(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.File, *o
 	return stdin, stdout, opened, nil
 }
 
-// startProcess resolves a command, applies redirections, and starts
-// the process in the given process group. pgid=0 means create a new
-// process group; pgid>0 means join that existing group.
 func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File, pgid int) (*os.Process, []*os.File) {
 	args := cmd.ArgStrings()
 	if len(args) == 0 {
@@ -364,9 +496,6 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.Fi
 	return proc, opened
 }
 
-// waitProc waits for a process and returns its exit status.
-// If the process was killed by a signal, the exit status is
-// 128 + signal number (bash convention).
 func waitProc(proc *os.Process) int {
 	ps, err := proc.Wait()
 	if err != nil {
@@ -387,10 +516,6 @@ func waitProc(proc *os.Process) int {
 
 // --- Terminal control ---
 
-// isatty returns true if the file descriptor refers to a terminal.
-// We probe with TIOCGPGRP (get terminal foreground process group):
-// if the ioctl succeeds, the fd is a terminal. This works on both
-// Darwin and Linux, unlike TIOCGETA which is Darwin-only.
 func isatty(fd int) bool {
 	var pgrp int
 	_, _, errno := syscall.Syscall(
@@ -402,9 +527,6 @@ func isatty(fd int) bool {
 	return errno == 0
 }
 
-// tcsetpgrp sets the foreground process group of the terminal.
-// This controls which process group receives keyboard signals
-// (SIGINT from Ctrl-C, SIGTSTP from Ctrl-Z).
 func tcsetpgrp(fd int, pgid int) error {
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,

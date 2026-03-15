@@ -157,10 +157,17 @@ func (s *shellState) cmdSubst(cmd string) (string, error) {
 	}
 
 	// Execute the command with stdout directed to the pipe.
+	// Swap os.Stdout so that function bodies (which go through
+	// execList → execPipeline → os.Stdout) also write to the pipe.
+	oldStdout := os.Stdout
+	os.Stdout = w
+
 	oldStatus := s.lastStatus
 	for _, entry := range list.Entries {
 		execPipelineSubst(s, entry.Pipeline, w)
 	}
+
+	os.Stdout = oldStdout
 	w.Close()
 
 	// Read all output from the pipe.

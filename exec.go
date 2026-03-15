@@ -591,20 +591,56 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 }
 
 // execFunction runs a user-defined function body with positional params.
+// Each entry is expanded just before execution (lazy expansion) so that
+// assignments in earlier entries are visible to later ones.
 func execFunction(state *shellState, body *parser.List, args []string) int {
 	// Save and set positional parameters.
 	savedParams := state.positionalParams
 	state.positionalParams = args
 
 	cloned := parser.CloneList(body)
-	expander.Expand(cloned, state.lookup, state.cmdSubst)
-	execList(state, cloned)
+	execListLazy(state, cloned)
 
 	status := state.lastStatus
 	state.returnFlag = false
 	state.positionalParams = savedParams
 
 	return status
+}
+
+// execListLazy is like execList but expands each entry just before
+// execution. This ensures assignments from earlier entries are visible
+// when later entries are expanded (e.g., prev=$(cmd); echo $prev).
+func execListLazy(state *shellState, list *parser.List) {
+	for i := range list.Entries {
+		if i > 0 {
+			prevOp := list.Entries[i-1].Op
+			switch prevOp {
+			case "&&":
+				if state.lastStatus != 0 {
+					continue
+				}
+			case "||":
+				if state.lastStatus == 0 {
+					continue
+				}
+			}
+		}
+
+		// Expand just this entry before execution.
+		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
+		expander.Expand(singleList, state.lookup, state.cmdSubst)
+		list.Entries[i] = singleList.Entries[0]
+
+		if list.Entries[i].Op == "&" {
+			execBackground(state, list.Entries[i].Pipeline)
+		} else {
+			execPipeline(state, list.Entries[i].Pipeline)
+		}
+		if state.exitFlag || state.breakFlag || state.continueFlag || state.returnFlag {
+			return
+		}
+	}
 }
 
 // savedVar records a variable's previous state for restoration.

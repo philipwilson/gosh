@@ -39,10 +39,11 @@ type Command interface {
 type RedirType int
 
 const (
-	REDIR_IN     RedirType = iota // <
-	REDIR_OUT                     // >
-	REDIR_APPEND                  // >>
-	REDIR_DUP                    // >&N or <&N (fd duplication)
+	REDIR_IN      RedirType = iota // <
+	REDIR_OUT                      // >
+	REDIR_APPEND                   // >>
+	REDIR_DUP                     // >&N or <&N (fd duplication)
+	REDIR_HEREDOC                  // << (here document)
 )
 
 // Redirect represents a single I/O redirection on a command.
@@ -66,6 +67,8 @@ func (r Redirect) String() string {
 		return fmt.Sprintf("%s>>%s", fdStr, r.File)
 	case REDIR_DUP:
 		return fmt.Sprintf("%s>&%s", fdStr, r.File)
+	case REDIR_HEREDOC:
+		return fmt.Sprintf("%s<<heredoc", fdStr)
 	}
 	return "?redir"
 }

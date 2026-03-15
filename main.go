@@ -297,6 +297,12 @@ func main() {
 			state.ed.Complete = state.complete
 			defer ed.Close()
 		}
+
+		// Source ~/.goshrc if it exists.
+		rcPath := filepath.Join(state.vars["HOME"], ".goshrc")
+		if _, err := os.Stat(rcPath); err == nil {
+			runScript(state, rcPath)
+		}
 	}
 
 	if state.ed != nil {
@@ -341,7 +347,26 @@ func runScript(state *shellState, path string) int {
 			}
 		}
 
-		if runLine(state, line) {
+		tokens, err := lexer.Lex(line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			continue
+		}
+
+		if lexer.HasHeredocs(tokens) {
+			hdErr := lexer.ResolveHeredocs(tokens, func() (string, bool) {
+				if !scanner.Scan() {
+					return "", false
+				}
+				return scanner.Text(), true
+			})
+			if hdErr != nil {
+				fmt.Fprintf(os.Stderr, "gosh: %v\n", hdErr)
+				continue
+			}
+		}
+
+		if runTokens(state, tokens) {
 			break
 		}
 	}
@@ -387,7 +412,29 @@ func runInteractive(state *shellState) {
 			}
 		}
 
-		if runLine(state, line) {
+		tokens, err := lexer.Lex(line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			continue
+		}
+
+		// Resolve heredoc bodies by reading continuation lines.
+		if lexer.HasHeredocs(tokens) {
+			hdErr := lexer.ResolveHeredocs(tokens, func() (string, bool) {
+				ps2 := state.formatPrompt(state.vars["PS2"])
+				more, err := state.ed.ReadLine(ps2)
+				if err != nil {
+					return "", false
+				}
+				return more, true
+			})
+			if hdErr != nil {
+				fmt.Fprintf(os.Stderr, "gosh: %v\n", hdErr)
+				continue
+			}
+		}
+
+		if runTokens(state, tokens) {
 			break
 		}
 
@@ -427,7 +474,26 @@ func runNonInteractive(state *shellState) {
 			}
 		}
 
-		if runLine(state, line) {
+		tokens, err := lexer.Lex(line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			continue
+		}
+
+		if lexer.HasHeredocs(tokens) {
+			hdErr := lexer.ResolveHeredocs(tokens, func() (string, bool) {
+				if !scanner.Scan() {
+					return "", false
+				}
+				return scanner.Text(), true
+			})
+			if hdErr != nil {
+				fmt.Fprintf(os.Stderr, "gosh: %v\n", hdErr)
+				continue
+			}
+		}
+
+		if runTokens(state, tokens) {
 			break
 		}
 	}
@@ -481,7 +547,12 @@ func runLine(state *shellState, line string) bool {
 		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 		return false
 	}
+	return runTokens(state, tokens)
+}
 
+// runTokens parses and executes a pre-lexed token stream.
+// Returns true if the shell should exit.
+func runTokens(state *shellState, tokens []lexer.Token) bool {
 	if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
 		return false
 	}

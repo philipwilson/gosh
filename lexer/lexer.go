@@ -88,6 +88,7 @@ const (
 	TOKEN_OR                     // ||
 	TOKEN_AMP                    // & (background)
 	TOKEN_DSEMI                  // ;; (case clause terminator)
+	TOKEN_HEREDOC                // << or <<- (here document)
 	TOKEN_LPAREN                 // ( (function definition)
 	TOKEN_RPAREN                 // ) (case pattern terminator)
 	TOKEN_EOF                    // end of input
@@ -117,6 +118,8 @@ func (t TokenType) String() string {
 		return "AMP"
 	case TOKEN_DSEMI:
 		return "DSEMI"
+	case TOKEN_HEREDOC:
+		return "HEREDOC"
 	case TOKEN_LPAREN:
 		return "LPAREN"
 	case TOKEN_RPAREN:
@@ -128,12 +131,21 @@ func (t TokenType) String() string {
 	}
 }
 
+// HeredocInfo carries the metadata for a here document token.
+type HeredocInfo struct {
+	Delim     string // delimiter with quotes stripped
+	StripTabs bool   // true for <<-
+	Expand    bool   // true unless delimiter was quoted
+	Body      Word   // filled in by ResolveHeredocs
+}
+
 // Token is a single lexical unit produced by the lexer.
 type Token struct {
-	Type  TokenType
-	Val   string // the token's value (meaningful for WORD and DUP tokens)
-	Parts Word   // quoting-aware parts (meaningful for WORD tokens)
-	Fd    int    // file descriptor for redirect tokens (-1 = use default)
+	Type    TokenType
+	Val     string       // the token's value (meaningful for WORD and DUP tokens)
+	Parts   Word         // quoting-aware parts (meaningful for WORD tokens)
+	Fd      int          // file descriptor for redirect tokens (-1 = use default)
+	Heredoc *HeredocInfo // non-nil for TOKEN_HEREDOC
 }
 
 func (t Token) String() string {
@@ -142,6 +154,12 @@ func (t Token) String() string {
 		return fmt.Sprintf("%s(%q)", t.Type, t.Val)
 	case TOKEN_DUP:
 		return fmt.Sprintf("DUP(%d>&%s)", t.Fd, t.Val)
+	case TOKEN_HEREDOC:
+		op := "<<"
+		if t.Heredoc != nil && t.Heredoc.StripTabs {
+			op = "<<-"
+		}
+		return fmt.Sprintf("%s%s", op, t.Val)
 	case TOKEN_GT, TOKEN_APPEND, TOKEN_LT:
 		if t.Fd >= 0 {
 			return fmt.Sprintf("%s(fd=%d)", t.Type, t.Fd)
@@ -214,7 +232,7 @@ func (l *lexer) lex() ([]Token, error) {
 			last := tokens[len(tokens)-1].Type
 			if last == TOKEN_SEMI || last == TOKEN_PIPE || last == TOKEN_AND ||
 				last == TOKEN_OR || last == TOKEN_AMP || last == TOKEN_DSEMI ||
-				last == TOKEN_LPAREN || last == TOKEN_RPAREN {
+				last == TOKEN_LPAREN || last == TOKEN_RPAREN || last == TOKEN_HEREDOC {
 				continue
 			}
 			tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
@@ -279,7 +297,29 @@ func (l *lexer) lex() ([]Token, error) {
 
 		case ch == '<':
 			l.next()
-			if c, ok := l.peek(); ok && c == '&' {
+			if c, ok := l.peek(); ok && c == '<' {
+				l.next() // consume second <
+				tok := Token{Type: TOKEN_HEREDOC, Fd: -1}
+				tokens = absorbFd(tokens, &tok)
+				// Check for <<- (strip tabs)
+				stripTabs := false
+				if d, ok := l.peek(); ok && d == '-' {
+					l.next()
+					stripTabs = true
+				}
+				l.skipSpaces()
+				delim, expand, err := l.readHeredocDelim()
+				if err != nil {
+					return nil, err
+				}
+				tok.Val = delim
+				tok.Heredoc = &HeredocInfo{
+					Delim:     delim,
+					StripTabs: stripTabs,
+					Expand:    expand,
+				}
+				tokens = append(tokens, tok)
+			} else if c, ok := l.peek(); ok && c == '&' {
 				l.next() // consume &
 				d, ok := l.peek()
 				if !ok || d < '0' || d > '9' {
@@ -681,6 +721,148 @@ func (l *lexer) readArithSubst() (string, error) {
 			buf = append(buf, ch)
 		}
 	}
+}
+
+// readHeredocDelim reads the delimiter word after << or <<-.
+// If the delimiter is quoted (single or double), Expand is false.
+func (l *lexer) readHeredocDelim() (delim string, expand bool, err error) {
+	ch, ok := l.peek()
+	if !ok || ch == '\n' {
+		return "", false, fmt.Errorf("expected heredoc delimiter")
+	}
+
+	expand = true
+	switch ch {
+	case '\'':
+		l.next()
+		var buf []rune
+		for {
+			c, ok := l.next()
+			if !ok {
+				return "", false, fmt.Errorf("unterminated heredoc delimiter quote")
+			}
+			if c == '\'' {
+				return string(buf), false, nil
+			}
+			buf = append(buf, c)
+		}
+	case '"':
+		l.next()
+		var buf []rune
+		for {
+			c, ok := l.next()
+			if !ok {
+				return "", false, fmt.Errorf("unterminated heredoc delimiter quote")
+			}
+			if c == '"' {
+				return string(buf), false, nil
+			}
+			if c == '\\' {
+				esc, ok := l.next()
+				if !ok {
+					return "", false, fmt.Errorf("unterminated heredoc delimiter quote")
+				}
+				buf = append(buf, esc)
+				continue
+			}
+			buf = append(buf, c)
+		}
+	default:
+		var buf []rune
+		for {
+			c, ok := l.peek()
+			if !ok || c == ' ' || c == '\t' || c == '\n' || isOperator(c) {
+				break
+			}
+			l.next()
+			buf = append(buf, c)
+		}
+		if len(buf) == 0 {
+			return "", false, fmt.Errorf("expected heredoc delimiter")
+		}
+		return string(buf), true, nil
+	}
+}
+
+// LexHeredocBody parses heredoc body text the same way as double-quoted
+// content, recognizing $VAR, ${VAR}, $(cmd), $((expr)), and `cmd` but
+// not treating anything else as special. Returns a Word with appropriate
+// parts for the expander.
+func LexHeredocBody(body string) (Word, error) {
+	l := &lexer{input: []rune(body)}
+	var parts Word
+	var buf []rune
+
+	flush := func() {
+		if len(buf) > 0 {
+			parts = append(parts, WordPart{Text: string(buf), Quote: DoubleQuoted})
+			buf = nil
+		}
+	}
+
+	for {
+		ch, ok := l.next()
+		if !ok {
+			break
+		}
+
+		switch ch {
+		case '\\':
+			esc, ok := l.next()
+			if !ok {
+				buf = append(buf, '\\')
+				continue
+			}
+			switch esc {
+			case '$':
+				flush()
+				parts = append(parts, WordPart{Text: "$", Quote: SingleQuoted})
+			case '\\', '`':
+				buf = append(buf, esc)
+			default:
+				buf = append(buf, '\\', esc)
+			}
+
+		case '`':
+			flush()
+			cmd, err := l.readBacktick()
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubstDQ})
+
+		case '$':
+			if next, ok := l.peek(); ok && next == '(' {
+				if l.pos+1 < len(l.input) && l.input[l.pos+1] == '(' {
+					// $(( — arithmetic substitution
+					flush()
+					l.next() // consume first (
+					l.next() // consume second (
+					expr, err := l.readArithSubst()
+					if err != nil {
+						return nil, err
+					}
+					parts = append(parts, WordPart{Text: expr, Quote: ArithSubstDQ})
+					continue
+				}
+				flush()
+				l.next() // consume (
+				cmd, err := l.readCmdSubst()
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, WordPart{Text: cmd, Quote: CmdSubstDQ})
+				continue
+			}
+			buf = append(buf, ch)
+
+		default:
+			buf = append(buf, ch)
+		}
+	}
+
+	flush()
+	return parts, nil
 }
 
 func isOperator(ch rune) bool {

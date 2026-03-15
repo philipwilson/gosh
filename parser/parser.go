@@ -481,6 +481,18 @@ func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 			}
 			cmd.Redirects = append(cmd.Redirects, r)
 
+		case lexer.TOKEN_HEREDOC:
+			rTok := p.next()
+			fd := rTok.Fd
+			if fd < 0 {
+				fd = 0 // default fd for heredoc is stdin
+			}
+			cmd.Redirects = append(cmd.Redirects, Redirect{
+				Fd:   fd,
+				Type: REDIR_HEREDOC,
+				File: rTok.Heredoc.Body,
+			})
+
 		case lexer.TOKEN_DUP:
 			rTok := p.next()
 			target := lexer.Word{{Text: rTok.Val, Quote: lexer.Unquoted}}

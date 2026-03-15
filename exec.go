@@ -614,6 +614,19 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 			opened = append(opened, f)
 			fds[fd] = f
 
+		case parser.REDIR_HEREDOC:
+			body := r.File.String()
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				return fail(fmt.Errorf("heredoc pipe: %v", err))
+			}
+			go func() {
+				pw.WriteString(body)
+				pw.Close()
+			}()
+			opened = append(opened, pr)
+			fds[fd] = pr
+
 		case parser.REDIR_DUP:
 			target, err := strconv.Atoi(r.File.String())
 			if err != nil || target < 0 || target > 2 {

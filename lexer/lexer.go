@@ -16,6 +16,10 @@
 // Operator tokens (|, <, >, >>, ;, &&, ||) are recognized only in
 // unquoted context. Whitespace separates tokens only when unquoted.
 //
+// Fd redirections: a single digit immediately before < or > is
+// absorbed as the file descriptor number (e.g., 2>file, 0<input).
+// The >&N and <&N syntax produces TOKEN_DUP for fd duplication.
+//
 // Each WORD token carries both a plain string value (Val) and a
 // slice of WordParts that preserves quoting context. The expander
 // uses Parts to know where $VAR expansion should occur (not inside
@@ -69,6 +73,7 @@ const (
 	TOKEN_LT                     // <
 	TOKEN_GT                     // >
 	TOKEN_APPEND                 // >>
+	TOKEN_DUP                    // >&N or <&N (fd duplication)
 	TOKEN_SEMI                   // ;
 	TOKEN_AND                    // &&
 	TOKEN_OR                     // ||
@@ -87,6 +92,8 @@ func (t TokenType) String() string {
 		return "GT"
 	case TOKEN_APPEND:
 		return "APPEND"
+	case TOKEN_DUP:
+		return "DUP"
 	case TOKEN_SEMI:
 		return "SEMI"
 	case TOKEN_AND:
@@ -103,15 +110,25 @@ func (t TokenType) String() string {
 // Token is a single lexical unit produced by the lexer.
 type Token struct {
 	Type  TokenType
-	Val   string // the token's value (meaningful for WORD tokens)
+	Val   string // the token's value (meaningful for WORD and DUP tokens)
 	Parts Word   // quoting-aware parts (meaningful for WORD tokens)
+	Fd    int    // file descriptor for redirect tokens (-1 = use default)
 }
 
 func (t Token) String() string {
-	if t.Type == TOKEN_WORD {
+	switch t.Type {
+	case TOKEN_WORD:
 		return fmt.Sprintf("%s(%q)", t.Type, t.Val)
+	case TOKEN_DUP:
+		return fmt.Sprintf("DUP(%d>&%s)", t.Fd, t.Val)
+	case TOKEN_GT, TOKEN_APPEND, TOKEN_LT:
+		if t.Fd >= 0 {
+			return fmt.Sprintf("%s(fd=%d)", t.Type, t.Fd)
+		}
+		return t.Type.String()
+	default:
+		return t.Type.String()
 	}
-	return t.Type.String()
 }
 
 // Lex tokenizes the input string and returns the token list.
@@ -162,41 +179,70 @@ func (l *lexer) lex() ([]Token, error) {
 			l.next()
 			if c, ok := l.peek(); ok && c == '|' {
 				l.next()
-				tokens = append(tokens, Token{Type: TOKEN_OR})
+				tokens = append(tokens, Token{Type: TOKEN_OR, Fd: -1})
 			} else {
-				tokens = append(tokens, Token{Type: TOKEN_PIPE})
+				tokens = append(tokens, Token{Type: TOKEN_PIPE, Fd: -1})
 			}
 
 		case ch == '&':
 			l.next()
 			if c, ok := l.peek(); ok && c == '&' {
 				l.next()
-				tokens = append(tokens, Token{Type: TOKEN_AND})
+				tokens = append(tokens, Token{Type: TOKEN_AND, Fd: -1})
 			} else {
 				// Bare & (background) — treat as a word for now.
 				tokens = append(tokens, Token{
 					Type:  TOKEN_WORD,
 					Val:   "&",
 					Parts: Word{{Text: "&", Quote: Unquoted}},
+					Fd:    -1,
 				})
 			}
 
 		case ch == ';':
 			l.next()
-			tokens = append(tokens, Token{Type: TOKEN_SEMI})
+			tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
 
 		case ch == '>':
 			l.next()
 			if c, ok := l.peek(); ok && c == '>' {
 				l.next()
-				tokens = append(tokens, Token{Type: TOKEN_APPEND})
+				tok := Token{Type: TOKEN_APPEND, Fd: -1}
+				tokens = absorbFd(tokens, &tok)
+				tokens = append(tokens, tok)
+			} else if c, ok := l.peek(); ok && c == '&' {
+				l.next() // consume &
+				d, ok := l.peek()
+				if !ok || d < '0' || d > '9' {
+					return nil, fmt.Errorf("expected digit after >&")
+				}
+				l.next()
+				tok := Token{Type: TOKEN_DUP, Val: string(d), Fd: 1}
+				tokens = absorbFd(tokens, &tok)
+				tokens = append(tokens, tok)
 			} else {
-				tokens = append(tokens, Token{Type: TOKEN_GT})
+				tok := Token{Type: TOKEN_GT, Fd: -1}
+				tokens = absorbFd(tokens, &tok)
+				tokens = append(tokens, tok)
 			}
 
 		case ch == '<':
 			l.next()
-			tokens = append(tokens, Token{Type: TOKEN_LT})
+			if c, ok := l.peek(); ok && c == '&' {
+				l.next() // consume &
+				d, ok := l.peek()
+				if !ok || d < '0' || d > '9' {
+					return nil, fmt.Errorf("expected digit after <&")
+				}
+				l.next()
+				tok := Token{Type: TOKEN_DUP, Val: string(d), Fd: 0}
+				tokens = absorbFd(tokens, &tok)
+				tokens = append(tokens, tok)
+			} else {
+				tok := Token{Type: TOKEN_LT, Fd: -1}
+				tokens = absorbFd(tokens, &tok)
+				tokens = append(tokens, tok)
+			}
 
 		default:
 			parts, err := l.readWord()
@@ -207,12 +253,28 @@ func (l *lexer) lex() ([]Token, error) {
 				Type:  TOKEN_WORD,
 				Val:   parts.String(),
 				Parts: parts,
+				Fd:    -1,
 			})
 		}
 	}
 
-	tokens = append(tokens, Token{Type: TOKEN_EOF})
+	tokens = append(tokens, Token{Type: TOKEN_EOF, Fd: -1})
 	return tokens, nil
+}
+
+// absorbFd checks if the previous token is a single-digit word. If so,
+// it removes that token and sets the redirect token's Fd to that digit.
+// This handles patterns like 2>file and 2>&1.
+func absorbFd(tokens []Token, tok *Token) []Token {
+	n := len(tokens)
+	if n > 0 {
+		prev := tokens[n-1]
+		if prev.Type == TOKEN_WORD && len(prev.Val) == 1 && prev.Val[0] >= '0' && prev.Val[0] <= '9' {
+			tok.Fd = int(prev.Val[0] - '0')
+			return tokens[:n-1]
+		}
+	}
+	return tokens
 }
 
 func (l *lexer) skipSpaces() {

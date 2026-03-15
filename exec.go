@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 
 	"gosh/parser"
@@ -83,7 +84,8 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 			stdout = pipes[i].w
 		}
 
-		proc, opened := startProcess(state, cmd, stdin, stdout, pgid)
+		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		proc, opened := startProcess(state, cmd, fds, pgid)
 		infos[i] = procInfo{proc: proc, files: opened}
 
 		if i == 0 && proc != nil {
@@ -143,14 +145,15 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 			state.setVar(a.Name, a.Value.String())
 		}
 
-		stdin, stdout, opened, err := applyRedirects(cmd, stdin, stdout)
+		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		fds, opened, err := applyRedirects(cmd, fds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 			restoreVars(state, saved)
 			return 1
 		}
-		_ = stdin // builtins don't currently read from stdin
-		status := fn(state, args[1:], stdout)
+		_ = fds[0] // builtins don't currently read from stdin
+		status := fn(state, args[1:], fds[1])
 		for _, f := range opened {
 			f.Close()
 		}
@@ -160,7 +163,8 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	}
 
 	// External command.
-	proc, opened := startProcess(state, cmd, stdin, stdout, 0)
+	fds := [3]*os.File{stdin, stdout, os.Stderr}
+	proc, opened := startProcess(state, cmd, fds, 0)
 	if proc == nil {
 		return 127
 	}
@@ -203,45 +207,85 @@ func restoreVars(state *shellState, saved map[string]savedVar) {
 
 // --- Process management ---
 
-func applyRedirects(cmd *parser.SimpleCmd, stdin, stdout *os.File) (*os.File, *os.File, []*os.File, error) {
+// applyRedirects processes a command's redirections, updating the
+// fd table (stdin=0, stdout=1, stderr=2). Returns the updated fds
+// and a list of opened files that must be closed after use.
+func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.File, error) {
 	var opened []*os.File
 
 	for _, r := range cmd.Redirects {
-		filename := r.File.String()
-
-		var f *os.File
-		var err error
-		switch r.Type {
-		case parser.REDIR_IN:
-			f, err = os.Open(filename)
-			if err == nil {
-				stdin = f
-			}
-		case parser.REDIR_OUT:
-			f, err = os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-			if err == nil {
-				stdout = f
-			}
-		case parser.REDIR_APPEND:
-			f, err = os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-			if err == nil {
-				stdout = f
+		// Resolve the source fd: use explicit fd, or default
+		// based on redirect type.
+		fd := r.Fd
+		if fd < 0 {
+			switch r.Type {
+			case parser.REDIR_IN:
+				fd = 0
+			default:
+				fd = 1
 			}
 		}
 
-		if err != nil {
+		if fd > 2 {
 			for _, o := range opened {
 				o.Close()
 			}
-			return nil, nil, nil, fmt.Errorf("%s: %v", filename, err)
+			return fds, nil, fmt.Errorf("fd %d: only 0-2 supported", fd)
 		}
-		opened = append(opened, f)
+
+		switch r.Type {
+		case parser.REDIR_IN:
+			filename := r.File.String()
+			f, err := os.Open(filename)
+			if err != nil {
+				for _, o := range opened {
+					o.Close()
+				}
+				return fds, nil, fmt.Errorf("%s: %v", filename, err)
+			}
+			opened = append(opened, f)
+			fds[fd] = f
+
+		case parser.REDIR_OUT:
+			filename := r.File.String()
+			f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+			if err != nil {
+				for _, o := range opened {
+					o.Close()
+				}
+				return fds, nil, fmt.Errorf("%s: %v", filename, err)
+			}
+			opened = append(opened, f)
+			fds[fd] = f
+
+		case parser.REDIR_APPEND:
+			filename := r.File.String()
+			f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+			if err != nil {
+				for _, o := range opened {
+					o.Close()
+				}
+				return fds, nil, fmt.Errorf("%s: %v", filename, err)
+			}
+			opened = append(opened, f)
+			fds[fd] = f
+
+		case parser.REDIR_DUP:
+			target, err := strconv.Atoi(r.File.String())
+			if err != nil || target < 0 || target > 2 {
+				for _, o := range opened {
+					o.Close()
+				}
+				return fds, nil, fmt.Errorf("bad fd: %s", r.File.String())
+			}
+			fds[fd] = fds[target]
+		}
 	}
 
-	return stdin, stdout, opened, nil
+	return fds, opened, nil
 }
 
-func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File, pgid int) (*os.Process, []*os.File) {
+func startProcess(state *shellState, cmd *parser.SimpleCmd, fds [3]*os.File, pgid int) (*os.Process, []*os.File) {
 	args := cmd.ArgStrings()
 	if len(args) == 0 {
 		return nil, nil
@@ -253,7 +297,7 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.Fi
 		return nil, nil
 	}
 
-	stdin, stdout, opened, err := applyRedirects(cmd, stdin, stdout)
+	fds, opened, err := applyRedirects(cmd, fds)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 		return nil, nil
@@ -266,7 +310,7 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.Fi
 
 	proc, err := os.StartProcess(path, args, &os.ProcAttr{
 		Env:   env,
-		Files: []*os.File{stdin, stdout, os.Stderr},
+		Files: []*os.File{fds[0], fds[1], fds[2]},
 		Sys: &syscall.SysProcAttr{
 			Setpgid: true,
 			Pgid:    pgid,

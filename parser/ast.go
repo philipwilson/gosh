@@ -5,7 +5,8 @@
 //	list       = pipeline ((';' | '&&' | '||') pipeline)*
 //	pipeline   = command ('|' command)*
 //	command    = (assign)* (word | redirect)*
-//	redirect   = ('<' | '>' | '>>') word
+//	redirect   = [N] ('<' | '>' | '>>') word
+//	           | [N] ('>&' | '<&') digit
 //	assign     = NAME '=' word   (recognized only before the first non-assignment word)
 //
 // The AST is intentionally simple: three node types cover everything
@@ -34,22 +35,30 @@ const (
 	REDIR_IN     RedirType = iota // <
 	REDIR_OUT                     // >
 	REDIR_APPEND                  // >>
+	REDIR_DUP                    // >&N or <&N (fd duplication)
 )
 
 // Redirect represents a single I/O redirection on a command.
 type Redirect struct {
+	Fd   int       // source fd (-1 = default: 0 for input, 1 for output)
 	Type RedirType
-	File lexer.Word // target filename (may contain $VAR for expansion)
+	File lexer.Word // target filename, or fd number string for REDIR_DUP
 }
 
 func (r Redirect) String() string {
+	fdStr := ""
+	if r.Fd >= 0 {
+		fdStr = fmt.Sprintf("%d", r.Fd)
+	}
 	switch r.Type {
 	case REDIR_IN:
-		return fmt.Sprintf("<%s", r.File)
+		return fmt.Sprintf("%s<%s", fdStr, r.File)
 	case REDIR_OUT:
-		return fmt.Sprintf(">%s", r.File)
+		return fmt.Sprintf("%s>%s", fdStr, r.File)
 	case REDIR_APPEND:
-		return fmt.Sprintf(">>%s", r.File)
+		return fmt.Sprintf("%s>>%s", fdStr, r.File)
+	case REDIR_DUP:
+		return fmt.Sprintf("%s>&%s", fdStr, r.File)
 	}
 	return "?redir"
 }

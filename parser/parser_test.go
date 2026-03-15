@@ -255,6 +255,73 @@ func TestEqualsAfterCommandIsArg(t *testing.T) {
 	expectArgs(t, cmd, "echo", "FOO=bar")
 }
 
+// --- Fd redirect tests ---
+
+func TestStderrRedirectParse(t *testing.T) {
+	list := mustParse(t, "cmd 2>err.txt")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Redirects) != 1 {
+		t.Fatalf("expected 1 redirect, got %d", len(cmd.Redirects))
+	}
+	r := cmd.Redirects[0]
+	if r.Fd != 2 {
+		t.Errorf("expected fd 2, got %d", r.Fd)
+	}
+	if r.Type != REDIR_OUT {
+		t.Errorf("expected REDIR_OUT, got %d", r.Type)
+	}
+	if r.File.String() != "err.txt" {
+		t.Errorf("expected err.txt, got %q", r.File.String())
+	}
+}
+
+func TestStderrDupParse(t *testing.T) {
+	list := mustParse(t, "cmd 2>&1")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Redirects) != 1 {
+		t.Fatalf("expected 1 redirect, got %d", len(cmd.Redirects))
+	}
+	r := cmd.Redirects[0]
+	if r.Fd != 2 {
+		t.Errorf("expected fd 2, got %d", r.Fd)
+	}
+	if r.Type != REDIR_DUP {
+		t.Errorf("expected REDIR_DUP, got %d", r.Type)
+	}
+	if r.File.String() != "1" {
+		t.Errorf("expected target 1, got %q", r.File.String())
+	}
+}
+
+func TestDefaultRedirectFdParse(t *testing.T) {
+	list := mustParse(t, "echo hi > out.txt")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	r := cmd.Redirects[0]
+	if r.Fd != -1 {
+		t.Errorf("expected fd -1 (default), got %d", r.Fd)
+	}
+	if r.Type != REDIR_OUT {
+		t.Errorf("expected REDIR_OUT, got %d", r.Type)
+	}
+}
+
+func TestMultipleRedirectsParse(t *testing.T) {
+	list := mustParse(t, "cmd >out.txt 2>&1")
+	cmd := list.Entries[0].Pipeline.Cmds[0]
+	if len(cmd.Redirects) != 2 {
+		t.Fatalf("expected 2 redirects, got %d", len(cmd.Redirects))
+	}
+	if cmd.Redirects[0].Type != REDIR_OUT {
+		t.Errorf("first redirect: expected REDIR_OUT")
+	}
+	if cmd.Redirects[1].Type != REDIR_DUP {
+		t.Errorf("second redirect: expected REDIR_DUP")
+	}
+	if cmd.Redirects[1].Fd != 2 {
+		t.Errorf("second redirect: expected fd 2, got %d", cmd.Redirects[1].Fd)
+	}
+}
+
 // --- helpers ---
 
 func expectArgs(t *testing.T, cmd *SimpleCmd, want ...string) {

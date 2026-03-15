@@ -145,6 +145,15 @@ func (p *parser) parseCommand() (*SimpleCmd, error) {
 			}
 			cmd.Redirects = append(cmd.Redirects, r)
 
+		case lexer.TOKEN_DUP:
+			rTok := p.next()
+			target := lexer.Word{{Text: rTok.Val, Quote: lexer.Unquoted}}
+			cmd.Redirects = append(cmd.Redirects, Redirect{
+				Fd:   rTok.Fd,
+				Type: REDIR_DUP,
+				File: target,
+			})
+
 		default:
 			if len(cmd.Args) == 0 && len(cmd.Redirects) == 0 && len(cmd.Assigns) == 0 {
 				return nil, fmt.Errorf("expected command, got %s", tok)
@@ -155,7 +164,7 @@ func (p *parser) parseCommand() (*SimpleCmd, error) {
 }
 
 func (p *parser) parseRedirect(typ RedirType) (Redirect, error) {
-	p.next() // consume the redirect operator
+	rTok := p.next() // consume the redirect operator
 
 	tok := p.peek()
 	if tok.Type != lexer.TOKEN_WORD {
@@ -163,7 +172,7 @@ func (p *parser) parseRedirect(typ RedirType) (Redirect, error) {
 	}
 	p.next()
 
-	return Redirect{Type: typ, File: tok.Parts}, nil
+	return Redirect{Fd: rTok.Fd, Type: typ, File: tok.Parts}, nil
 }
 
 // splitAssignment checks if a word is a variable assignment (NAME=VALUE).

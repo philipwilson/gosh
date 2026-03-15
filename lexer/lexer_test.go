@@ -261,6 +261,131 @@ func TestPartsBackslashSpace(t *testing.T) {
 	)
 }
 
+// --- Fd redirect tests ---
+
+func TestStderrRedirect(t *testing.T) {
+	tokens, err := Lex("cmd 2>err.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_EOF)
+	if tokens[1].Fd != 2 {
+		t.Errorf("expected fd 2, got %d", tokens[1].Fd)
+	}
+	expectWordVal(t, tokens, 2, "err.txt")
+}
+
+func TestStderrAppend(t *testing.T) {
+	tokens, err := Lex("cmd 2>>err.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_APPEND, TOKEN_WORD, TOKEN_EOF)
+	if tokens[1].Fd != 2 {
+		t.Errorf("expected fd 2, got %d", tokens[1].Fd)
+	}
+}
+
+func TestStderrToStdout(t *testing.T) {
+	tokens, err := Lex("cmd 2>&1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_DUP, TOKEN_EOF)
+	if tokens[1].Fd != 2 {
+		t.Errorf("expected fd 2, got %d", tokens[1].Fd)
+	}
+	if tokens[1].Val != "1" {
+		t.Errorf("expected dup target 1, got %q", tokens[1].Val)
+	}
+}
+
+func TestStdoutToStderr(t *testing.T) {
+	tokens, err := Lex("cmd >&2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_DUP, TOKEN_EOF)
+	if tokens[1].Fd != 1 {
+		t.Errorf("expected fd 1 (default), got %d", tokens[1].Fd)
+	}
+	if tokens[1].Val != "2" {
+		t.Errorf("expected dup target 2, got %q", tokens[1].Val)
+	}
+}
+
+func TestDefaultRedirectFd(t *testing.T) {
+	// > without explicit fd should have Fd=-1.
+	tokens, err := Lex("echo hi > out.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens[2].Type != TOKEN_GT {
+		t.Fatalf("expected GT, got %s", tokens[2].Type)
+	}
+	if tokens[2].Fd != -1 {
+		t.Errorf("expected fd -1 (default), got %d", tokens[2].Fd)
+	}
+}
+
+func TestStdinDup(t *testing.T) {
+	tokens, err := Lex("cmd <&3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_DUP, TOKEN_EOF)
+	if tokens[1].Fd != 0 {
+		t.Errorf("expected fd 0 (default for <&), got %d", tokens[1].Fd)
+	}
+	if tokens[1].Val != "3" {
+		t.Errorf("expected dup target 3, got %q", tokens[1].Val)
+	}
+}
+
+func TestFdRedirectNoSpace(t *testing.T) {
+	// 2>err.txt with no spaces — the "2" should be absorbed.
+	tokens, err := Lex("cmd 2>err.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should be: WORD("cmd"), GT(fd=2), WORD("err.txt"), EOF
+	// NOT: WORD("cmd"), WORD("2"), GT, WORD("err.txt"), EOF
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_EOF)
+	expectWordVal(t, tokens, 0, "cmd")
+}
+
+func TestWordTwoNotFd(t *testing.T) {
+	// "22>file" — "22" is not a single digit, so should not be absorbed.
+	tokens, err := Lex("22>file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_EOF)
+	expectWordVal(t, tokens, 0, "22")
+	if tokens[1].Fd != -1 {
+		t.Errorf("expected fd -1 (22 is not a single digit), got %d", tokens[1].Fd)
+	}
+}
+
+func TestComplexRedirects(t *testing.T) {
+	// echo hello >out.txt 2>&1
+	tokens, err := Lex("echo hello >out.txt 2>&1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens,
+		TOKEN_WORD, TOKEN_WORD, TOKEN_GT, TOKEN_WORD, TOKEN_DUP, TOKEN_EOF)
+	if tokens[2].Fd != -1 {
+		t.Errorf("expected fd -1 for >, got %d", tokens[2].Fd)
+	}
+	if tokens[4].Fd != 2 {
+		t.Errorf("expected fd 2 for dup, got %d", tokens[4].Fd)
+	}
+	if tokens[4].Val != "1" {
+		t.Errorf("expected dup target 1, got %q", tokens[4].Val)
+	}
+}
+
 // --- helpers ---
 
 func expectWords(t *testing.T, tokens []Token, words ...string) {

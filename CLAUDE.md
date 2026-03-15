@@ -25,20 +25,20 @@ Shell input flows through four phases, each with a clean boundary:
 Input → Lexer → []Token → Parser → AST → Expander → Executor
 ```
 
-- **Lexer** (`lexer/`): Converts raw input to tokens. Handles single quotes (literal), double quotes (with `\` escapes for `" \ $ \``), backslash escapes, comments (unquoted `#` skips rest of line), and operator recognition (`|`, `<`, `>`, `>>`, `;`, `&&`, `||`). Each WORD token carries `Parts []WordPart` preserving quoting context (`Unquoted`, `SingleQuoted`, `DoubleQuoted`) for the expander.
+- **Lexer** (`lexer/`): Converts raw input to tokens. Handles single quotes (literal), double quotes (with `\` escapes for `" \ $ \``), backslash escapes, comments (unquoted `#` skips rest of line), and operator recognition (`|`, `<`, `>`, `>>`, `>&N`, `<&N`, `;`, `&&`, `||`). A single digit before `>`, `>>`, or `<` is absorbed as the fd number (e.g., `2>file`). Each WORD token carries `Parts []WordPart` preserving quoting context (`Unquoted`, `SingleQuoted`, `DoubleQuoted`) for the expander. Redirect tokens carry an `Fd` field (-1 = use default).
 
 - **Parser** (`parser/`): Recursive descent parser producing an AST. Grammar: `list → pipeline ((; | && | ||) pipeline)*`, `pipeline → command (| command)*`, `command → (assign)* (word | redirect)+`. AST nodes: `List` (sequence with operators), `Pipeline` (pipe-connected commands), `SimpleCmd` (assignments + args as `[]lexer.Word` + redirections). Recognizes `NAME=VALUE` assignments before command words.
 
 - **Expander** (`expander/`): Three-phase expansion on the AST: (1) tilde expansion (`~` → `$HOME`, `~user` → user's home dir, only unquoted); (2) variable expansion (`$VAR`, `${VAR}`, `$?`, `$$`) respecting quoting — no expansion in SingleQuoted parts; (3) glob expansion (`*`, `?`, `[...]`) on unquoted args only, using `filepath.Glob`. Builds glob patterns that escape metacharacters in quoted parts.
 
-- **Executor** (`main.go`): Walks the AST. Spawns processes via `os.StartProcess` with `SysProcAttr{Setpgid: true}` for process group isolation. Wires pipes with `os.Pipe()`. Applies `<`, `>`, `>>` redirections. Manages terminal foreground group via `tcsetpgrp` (TIOCSPGRP ioctl). Runs builtins in-process for standalone commands; in pipelines they fall through to external lookup. Implements `&&`/`||` short-circuit evaluation.
+- **Executor** (`exec.go`): Walks the AST. Spawns processes via `os.StartProcess` with `SysProcAttr{Setpgid: true}` for process group isolation. Wires pipes with `os.Pipe()`. Applies redirections (`<`, `>`, `>>`, `2>`, `2>&1`, etc.) using a `[3]*os.File` fd table (stdin/stdout/stderr). Manages terminal foreground group via `tcsetpgrp` (TIOCSPGRP ioctl). Runs builtins in-process for standalone commands; in pipelines they fall through to external lookup. Implements `&&`/`||` short-circuit evaluation. Per-command assignments are temporary for builtins (save/restore).
 
 ## Key Design Details
 
-- `os.StartProcess` / `syscall` for process management, not `os/exec.Cmd` — the plumbing should be visible
+- `os.StartProcess` / `syscall` for process management, not `os/exec.Cmd` — the plumbing should be visible. Source split: `main.go` (state/REPL), `exec.go` (execution), `builtins.go` (builtins), `terminal.go` (ioctl wrappers)
 - `exec.LookPath` is used for PATH resolution
 - Phases are separate packages with explicit data passed between them (tokens, AST nodes with `lexer.Word` parts)
-- Redirections override pipe defaults (e.g., `sort < file | head` uses file as sort's stdin)
+- Redirections override pipe defaults (e.g., `sort < file | head` uses file as sort's stdin). Supports fd-specific redirects (`2>file`, `2>>file`) and fd duplication (`2>&1`, `>&2`)
 - Exit status: last pipeline command determines status; signal kills → 128+signum
 - Process groups: each pipeline gets its own group; shell ignores SIGINT/SIGTSTP/SIGTTOU
 - Terminal control only when interactive (`isatty` via TIOCGPGRP probe)

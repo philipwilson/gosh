@@ -15,12 +15,14 @@ import (
 )
 
 // execList runs pipelines connected by ;, &&, and ||.
+// Each entry is expanded just before execution (lazy expansion) so
+// that assignments in earlier entries are visible to later ones.
 //
 //	;  — always run the next pipeline
 //	&& — run the next pipeline only if the previous succeeded (status 0)
 //	|| — run the next pipeline only if the previous failed (status != 0)
-func execList(state *shellState, list *parser.List) {
-	for i, entry := range list.Entries {
+func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
+	for i := range list.Entries {
 		if i > 0 {
 			prevOp := list.Entries[i-1].Op
 			switch prevOp {
@@ -35,10 +37,19 @@ func execList(state *shellState, list *parser.List) {
 			}
 		}
 
-		if entry.Op == "&" {
-			execBackground(state, entry.Pipeline)
+		// Expand this entry just before execution.
+		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
+		expander.Expand(singleList, state.lookup, state.cmdSubst)
+		list.Entries[i] = singleList.Entries[0]
+
+		if state.debugExpanded {
+			fmt.Fprintf(os.Stderr, "  %s\n", list.Entries[i].Pipeline)
+		}
+
+		if list.Entries[i].Op == "&" {
+			execBackground(state, list.Entries[i].Pipeline)
 		} else {
-			execPipeline(state, entry.Pipeline)
+			execPipeline(state, list.Entries[i].Pipeline, stdin, stdout)
 		}
 		if state.exitFlag || state.breakFlag || state.continueFlag || state.returnFlag {
 			return
@@ -128,11 +139,14 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 	state.lastStatus = 0
 }
 
-func execPipeline(state *shellState, pipe *parser.Pipeline) {
+// execPipeline runs a pipeline of one or more commands.
+// Terminal foreground control is only applied when not inside a
+// command substitution (state.substDepth == 0).
+func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.File) {
 	n := len(pipe.Cmds)
 
 	if n == 1 {
-		state.lastStatus = execCommand(state, pipe.Cmds[0], os.Stdin, os.Stdout)
+		state.lastStatus = execCommand(state, pipe.Cmds[0], stdin, stdout)
 		return
 	}
 
@@ -140,6 +154,8 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	// lookup. Running a builtin in a pipeline would require forking
 	// (to wire its output to a pipe), which defeats the purpose.
 	// External /bin/echo, /bin/pwd etc. handle this case.
+
+	foreground := state.interactive && state.substDepth == 0
 
 	type pipePair struct{ r, w *os.File }
 	pipes := make([]pipePair, n-1)
@@ -166,28 +182,28 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 			continue
 		}
 
-		var stdin *os.File
+		var sin *os.File
 		if i == 0 {
-			stdin = os.Stdin
+			sin = stdin
 		} else {
-			stdin = pipes[i-1].r
+			sin = pipes[i-1].r
 		}
 
-		var stdout *os.File
+		var sout *os.File
 		if i == n-1 {
-			stdout = os.Stdout
+			sout = stdout
 		} else {
-			stdout = pipes[i].w
+			sout = pipes[i].w
 		}
 
-		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		fds := [3]*os.File{sin, sout, os.Stderr}
 		proc, opened := startProcess(state, simple, fds, pgid)
 		infos[i] = procInfo{proc: proc, files: opened}
 
 		if i == 0 && proc != nil {
 			pgid = proc.Pid
 			syscall.Setpgid(proc.Pid, proc.Pid)
-			if state.interactive {
+			if foreground {
 				tcsetpgrp(state.termFd, pgid)
 			}
 		}
@@ -222,7 +238,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 		}
 	}
 
-	if state.interactive {
+	if foreground {
 		tcsetpgrp(state.termFd, state.shellPgid)
 	}
 
@@ -239,99 +255,19 @@ func execPipeline(state *shellState, pipe *parser.Pipeline) {
 	}
 }
 
-// execPipelineSubst runs a pipeline with stdout redirected to the given
-// writer. Used by command substitution to capture output.
-func execPipelineSubst(state *shellState, pipe *parser.Pipeline, stdout *os.File) {
-	n := len(pipe.Cmds)
-
-	if n == 1 {
-		state.lastStatus = execCommand(state, pipe.Cmds[0], os.Stdin, stdout)
-		return
-	}
-
-	// Multi-stage pipeline: same logic as execPipeline but the last
-	// stage writes to the provided stdout instead of os.Stdout.
-	type pipePair struct{ r, w *os.File }
-	pipes := make([]pipePair, n-1)
-	for i := range pipes {
-		r, w, err := os.Pipe()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: pipe: %v\n", err)
-			return
-		}
-		pipes[i] = pipePair{r, w}
-	}
-
-	type procInfo struct {
-		proc  *os.Process
-		files []*os.File
-	}
-	infos := make([]procInfo, n)
-	pgid := 0
-
-	for i, cmd := range pipe.Cmds {
-		simple, ok := cmd.(*parser.SimpleCmd)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "gosh: compound commands not supported in pipelines\n")
-			continue
-		}
-
-		var sin *os.File
-		if i == 0 {
-			sin = os.Stdin
-		} else {
-			sin = pipes[i-1].r
-		}
-
-		var sout *os.File
-		if i == n-1 {
-			sout = stdout
-		} else {
-			sout = pipes[i].w
-		}
-
-		fds := [3]*os.File{sin, sout, os.Stderr}
-		proc, opened := startProcess(state, simple, fds, pgid)
-		infos[i] = procInfo{proc: proc, files: opened}
-
-		if i == 0 && proc != nil {
-			pgid = proc.Pid
-			syscall.Setpgid(proc.Pid, proc.Pid)
-		}
-	}
-
-	for _, p := range pipes {
-		p.r.Close()
-		p.w.Close()
-	}
-
-	for i, info := range infos {
-		if info.proc == nil {
-			continue
-		}
-		res := waitProc(info.proc)
-		for _, f := range info.files {
-			f.Close()
-		}
-		if i == n-1 {
-			state.lastStatus = res.status
-		}
-	}
-}
-
 // execCommand dispatches a Command (simple or compound) for execution.
 func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) int {
 	switch c := cmd.(type) {
 	case *parser.SimpleCmd:
 		return execSimple(state, c, stdin, stdout)
 	case *parser.IfCmd:
-		return execIf(state, c)
+		return execIf(state, c, stdin, stdout)
 	case *parser.WhileCmd:
-		return execWhile(state, c)
+		return execWhile(state, c, stdin, stdout)
 	case *parser.ForCmd:
-		return execFor(state, c)
+		return execFor(state, c, stdin, stdout)
 	case *parser.CaseCmd:
-		return execCase(state, c)
+		return execCase(state, c, stdin, stdout)
 	case *parser.FuncDef:
 		state.funcs[c.Name] = c.Body
 		return 0
@@ -343,21 +279,21 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 
 // execIf evaluates an if/elif/else/fi command. Each condition and
 // body is expanded lazily — only the taken branch is expanded.
-func execIf(state *shellState, cmd *parser.IfCmd) int {
+func execIf(state *shellState, cmd *parser.IfCmd, stdin, stdout *os.File) int {
 	for _, clause := range cmd.Clauses {
-		expander.Expand(clause.Condition, state.lookup, state.cmdSubst)
-		execList(state, clause.Condition)
+		cond := parser.CloneList(clause.Condition)
+		execList(state, cond, stdin, stdout)
 
 		if state.lastStatus == 0 {
-			expander.Expand(clause.Body, state.lookup, state.cmdSubst)
-			execList(state, clause.Body)
+			body := parser.CloneList(clause.Body)
+			execList(state, body, stdin, stdout)
 			return state.lastStatus
 		}
 	}
 
 	if cmd.ElseBody != nil {
-		expander.Expand(cmd.ElseBody, state.lookup, state.cmdSubst)
-		execList(state, cmd.ElseBody)
+		body := parser.CloneList(cmd.ElseBody)
+		execList(state, body, stdin, stdout)
 		return state.lastStatus
 	}
 
@@ -367,16 +303,15 @@ func execIf(state *shellState, cmd *parser.IfCmd) int {
 }
 
 // execWhile evaluates a while/do/done loop. The condition and body
-// are cloned before each expansion so that $VAR references in the
-// original AST are preserved for re-expansion on each iteration.
-func execWhile(state *shellState, cmd *parser.WhileCmd) int {
+// are cloned before each iteration so that $VAR references in the
+// original AST are preserved for re-expansion.
+func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout *os.File) int {
 	state.loopDepth++
 	defer func() { state.loopDepth-- }()
 
 	for {
 		cond := parser.CloneList(cmd.Condition)
-		expander.Expand(cond, state.lookup, state.cmdSubst)
-		execList(state, cond)
+		execList(state, cond, stdin, stdout)
 
 		if state.lastStatus != 0 || state.breakFlag {
 			state.breakFlag = false
@@ -384,8 +319,7 @@ func execWhile(state *shellState, cmd *parser.WhileCmd) int {
 		}
 
 		body := parser.CloneList(cmd.Body)
-		expander.Expand(body, state.lookup, state.cmdSubst)
-		execList(state, body)
+		execList(state, body, stdin, stdout)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -404,7 +338,7 @@ func execWhile(state *shellState, cmd *parser.WhileCmd) int {
 // execFor evaluates a for/in/do/done loop. The word list is expanded
 // once (variables + globs), then the body runs for each resulting word
 // with the loop variable set.
-func execFor(state *shellState, cmd *parser.ForCmd) int {
+func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int {
 	// Expand the word list: variable expansion + glob expansion.
 	// Build a temporary SimpleCmd to reuse the expander's word logic.
 	expandedWords := make([]lexer.Word, len(cmd.Words))
@@ -433,8 +367,7 @@ func execFor(state *shellState, cmd *parser.ForCmd) int {
 		state.setVar(cmd.VarName, val)
 
 		body := parser.CloneList(cmd.Body)
-		expander.Expand(body, state.lookup, state.cmdSubst)
-		execList(state, body)
+		execList(state, body, stdin, stdout)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -453,7 +386,7 @@ func execFor(state *shellState, cmd *parser.ForCmd) int {
 // execCase evaluates a case/in/esac command. The word is expanded once,
 // then each clause's patterns are expanded and matched using filepath.Match.
 // The body of the first matching clause is executed.
-func execCase(state *shellState, cmd *parser.CaseCmd) int {
+func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) int {
 	// Expand the subject word.
 	word := parser.CloneWord(cmd.Word)
 	tmpCmd := &parser.SimpleCmd{Args: []lexer.Word{word}}
@@ -476,8 +409,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd) int {
 			}
 			if matched {
 				body := parser.CloneList(clause.Body)
-				expander.Expand(body, state.lookup, state.cmdSubst)
-				execList(state, body)
+				execList(state, body, stdin, stdout)
 				return state.lastStatus
 			}
 		}
@@ -518,9 +450,8 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 			restoreVars(state, saved)
 			return 1
 		}
-		_ = fds // redirects applied to child via function body
 
-		status := execFunction(state, body, args[1:])
+		status := execFunction(state, body, args[1:], fds[0], fds[1])
 		for _, f := range opened {
 			f.Close()
 		}
@@ -567,7 +498,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	pgid := proc.Pid
 	syscall.Setpgid(pgid, pgid)
 
-	if state.interactive {
+	if state.interactive && state.substDepth == 0 {
 		tcsetpgrp(state.termFd, pgid)
 	}
 
@@ -576,7 +507,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		f.Close()
 	}
 
-	if state.interactive {
+	if state.interactive && state.substDepth == 0 {
 		tcsetpgrp(state.termFd, state.shellPgid)
 	}
 
@@ -591,56 +522,19 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 }
 
 // execFunction runs a user-defined function body with positional params.
-// Each entry is expanded just before execution (lazy expansion) so that
-// assignments in earlier entries are visible to later ones.
-func execFunction(state *shellState, body *parser.List, args []string) int {
+func execFunction(state *shellState, body *parser.List, args []string, stdin, stdout *os.File) int {
 	// Save and set positional parameters.
 	savedParams := state.positionalParams
 	state.positionalParams = args
 
 	cloned := parser.CloneList(body)
-	execListLazy(state, cloned)
+	execList(state, cloned, stdin, stdout)
 
 	status := state.lastStatus
 	state.returnFlag = false
 	state.positionalParams = savedParams
 
 	return status
-}
-
-// execListLazy is like execList but expands each entry just before
-// execution. This ensures assignments from earlier entries are visible
-// when later entries are expanded (e.g., prev=$(cmd); echo $prev).
-func execListLazy(state *shellState, list *parser.List) {
-	for i := range list.Entries {
-		if i > 0 {
-			prevOp := list.Entries[i-1].Op
-			switch prevOp {
-			case "&&":
-				if state.lastStatus != 0 {
-					continue
-				}
-			case "||":
-				if state.lastStatus == 0 {
-					continue
-				}
-			}
-		}
-
-		// Expand just this entry before execution.
-		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
-		expander.Expand(singleList, state.lookup, state.cmdSubst)
-		list.Entries[i] = singleList.Entries[0]
-
-		if list.Entries[i].Op == "&" {
-			execBackground(state, list.Entries[i].Pipeline)
-		} else {
-			execPipeline(state, list.Entries[i].Pipeline)
-		}
-		if state.exitFlag || state.breakFlag || state.continueFlag || state.returnFlag {
-			return
-		}
-	}
 }
 
 // savedVar records a variable's previous state for restoration.

@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	"gosh/editor"
-	"gosh/expander"
 	"gosh/lexer"
 	"gosh/parser"
 )
@@ -42,6 +41,7 @@ type shellState struct {
 	debugTokens      bool                 // print tokens before parsing
 	debugAST         bool                 // print AST before expansion
 	debugExpanded    bool                 // print AST after expansion
+	substDepth       int                  // >0 when inside command substitution
 	ed               *editor.Editor       // line editor (nil if non-interactive)
 }
 
@@ -148,33 +148,23 @@ func (s *shellState) cmdSubst(cmd string) (string, error) {
 		return "", err
 	}
 
-	expander.Expand(list, s.lookup, s.cmdSubst)
-
 	// Create a pipe to capture stdout.
 	r, w, err := os.Pipe()
 	if err != nil {
 		return "", err
 	}
 
-	// Execute the command with stdout directed to the pipe.
-	// Swap os.Stdout so that function bodies (which go through
-	// execList → execPipeline → os.Stdout) also write to the pipe.
-	oldStdout := os.Stdout
-	os.Stdout = w
-
-	oldStatus := s.lastStatus
-	for _, entry := range list.Entries {
-		execPipelineSubst(s, entry.Pipeline, w)
-	}
-
-	os.Stdout = oldStdout
+	// Execute with stdout directed to the pipe. execList handles
+	// per-entry expansion, so no need to expand here.
+	s.substDepth++
+	execList(s, list, os.Stdin, w)
+	s.substDepth--
 	w.Close()
 
 	// Read all output from the pipe.
 	out, err := io.ReadAll(r)
 	r.Close()
 	if err != nil {
-		s.lastStatus = oldStatus
 		return "", err
 	}
 
@@ -411,13 +401,9 @@ func runLine(state *shellState, line string) bool {
 		fmt.Fprintf(os.Stderr, "  %s\n", list)
 	}
 
-	expander.Expand(list, state.lookup, state.cmdSubst)
-
-	if state.debugExpanded {
-		fmt.Fprintf(os.Stderr, "  %s\n", list)
-	}
-
-	execList(state, list)
+	// execList handles per-entry expansion (lazy), so no
+	// expander.Expand call here. debugExpanded is also in execList.
+	execList(state, list, os.Stdin, os.Stdout)
 
 	return state.exitFlag
 }

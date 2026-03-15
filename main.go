@@ -3,14 +3,17 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
 
+	"gosh/editor"
 	"gosh/expander"
 	"gosh/lexer"
 	"gosh/parser"
@@ -29,6 +32,7 @@ type shellState struct {
 	debugTokens   bool              // print tokens before parsing
 	debugAST      bool              // print AST before expansion
 	debugExpanded bool              // print AST after expansion
+	ed            *editor.Editor    // line editor (nil if non-interactive)
 }
 
 func newShellState() *shellState {
@@ -110,6 +114,7 @@ var builtins = map[string]builtinFunc{
 	"debug-tokens":   builtinDebugTokens,
 	"debug-ast":      builtinDebugAST,
 	"debug-expanded": builtinDebugExpanded,
+	"history":        builtinHistory,
 }
 
 // builtinCd changes the shell's working directory.
@@ -269,17 +274,81 @@ func builtinDebugExpanded(state *shellState, args []string, stdout *os.File) int
 	return 0
 }
 
+// builtinHistory prints the command history.
+func builtinHistory(state *shellState, args []string, stdout *os.File) int {
+	if state.ed == nil {
+		fmt.Fprintln(os.Stderr, "gosh: history: not available in non-interactive mode")
+		return 1
+	}
+	entries := state.ed.History.Entries()
+	for i, entry := range entries {
+		fmt.Fprintf(stdout, "%5d  %s\n", i+1, entry)
+	}
+	return 0
+}
+
 // --- Main loop ---
 
 func main() {
 	state := newShellState()
-	scanner := bufio.NewScanner(os.Stdin)
 
+	if state.interactive {
+		histPath := filepath.Join(state.vars["HOME"], ".gosh_history")
+		ed, err := editor.New(state.termFd, histPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: editor init failed: %v\n", err)
+			fmt.Fprintln(os.Stderr, "gosh: falling back to simple input")
+		} else {
+			state.ed = ed
+			defer ed.Close()
+		}
+	}
+
+	if state.ed != nil {
+		runInteractive(state)
+	} else {
+		runNonInteractive(state)
+	}
+
+	os.Exit(state.lastStatus)
+}
+
+func runInteractive(state *shellState) {
 	for {
-		fmt.Fprintf(os.Stderr, "gosh$ ")
+		line, err := state.ed.ReadLine("gosh$ ")
+		if err == io.EOF {
+			fmt.Fprintln(os.Stderr)
+			break
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: read: %v\n", err)
+			break
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if runLine(state, line) {
+			break
+		}
+
+		state.ed.History.Add(line)
+	}
+}
+
+func runNonInteractive(state *shellState) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		if state.interactive {
+			fmt.Fprintf(os.Stderr, "gosh$ ")
+		}
 
 		if !scanner.Scan() {
-			fmt.Fprintln(os.Stderr)
+			if state.interactive {
+				fmt.Fprintln(os.Stderr)
+			}
 			break
 		}
 
@@ -288,48 +357,50 @@ func main() {
 			continue
 		}
 
-		tokens, err := lexer.Lex(line)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
-			continue
-		}
-
-		// A line that is only whitespace and/or a comment produces
-		// just an EOF token — nothing to parse or execute.
-		if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
-			continue
-		}
-
-		if state.debugTokens {
-			for _, tok := range tokens {
-				fmt.Fprintf(os.Stderr, "  %s\n", tok)
-			}
-		}
-
-		list, err := parser.Parse(tokens)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
-			continue
-		}
-
-		if state.debugAST {
-			fmt.Fprintf(os.Stderr, "  %s\n", list)
-		}
-
-		expander.Expand(list, state.lookup)
-
-		if state.debugExpanded {
-			fmt.Fprintf(os.Stderr, "  %s\n", list)
-		}
-
-		execList(state, list)
-
-		if state.exitFlag {
+		if runLine(state, line) {
 			break
 		}
 	}
+}
 
-	os.Exit(state.lastStatus)
+// runLine lexes, parses, expands, and executes a single input line.
+// Returns true if the shell should exit.
+func runLine(state *shellState, line string) bool {
+	tokens, err := lexer.Lex(line)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		return false
+	}
+
+	if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
+		return false
+	}
+
+	if state.debugTokens {
+		for _, tok := range tokens {
+			fmt.Fprintf(os.Stderr, "  %s\n", tok)
+		}
+	}
+
+	list, err := parser.Parse(tokens)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		return false
+	}
+
+	if state.debugAST {
+		fmt.Fprintf(os.Stderr, "  %s\n", list)
+	}
+
+	expander.Expand(list, state.lookup)
+
+	if state.debugExpanded {
+		fmt.Fprintf(os.Stderr, "  %s\n", list)
+	}
+
+	execList(state, list)
+
+	return state.exitFlag
 }
 
 // --- Execution ---

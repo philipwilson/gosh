@@ -42,6 +42,15 @@ Input → Lexer → []Token → Parser → AST → Expander → Executor
 - Exit status: last pipeline command determines status; signal kills → 128+signum
 - Process groups: each pipeline gets its own group; shell ignores SIGINT/SIGTSTP/SIGTTOU
 - Terminal control only when interactive (`isatty` via TIOCGPGRP probe)
-- Builtins (cd, pwd, echo, exit, export, unset, true, false) run in-process with redirect support; cd supports `-` (OLDPWD) and updates PWD/OLDPWD
+- Builtins (cd, pwd, echo, exit, export, unset, true, false, history) run in-process with redirect support; cd supports `-` (OLDPWD) and updates PWD/OLDPWD
 - Debug builtins (`debug-tokens`, `debug-ast`, `debug-expanded`) toggle printing of tokens, pre-expansion AST, and post-expansion AST to stderr
-- `shellState` holds variables, export set, last exit status, and terminal info
+- `shellState` holds variables, export set, last exit status, editor, and terminal info
+
+## Line Editor
+
+The `editor/` package provides interactive line editing and command history:
+
+- **Terminal control** (`terminal_darwin.go`, `terminal_linux.go`): Platform-specific `tcgetattr`/`tcsetattr` via ioctl. Raw mode disables ICANON, ECHO, ISIG, IEXTEN, ICRNL, OPOST; sets VMIN=1/VTIME=0. Raw mode is active only during editing — restored before running child processes.
+- **History** (`history.go`): Persists to `~/.gosh_history`. Skips consecutive duplicates and blank lines. Capped at 1000 entries. File created with mode 0600.
+- **Editor** (`editor.go`): Emacs-style key bindings — Ctrl-A/E (Home/End), Ctrl-B/F (Left/Right), Ctrl-K/U (kill to EOL/BOL), Ctrl-W (kill word), Ctrl-L (clear screen), Ctrl-C (cancel), Ctrl-D (EOF on empty / delete char). Up/Down arrows navigate history. Escape sequences decoded for arrow keys, Home/End, Delete.
+- Non-interactive mode (piped input) falls back to `bufio.Scanner` with no editing.

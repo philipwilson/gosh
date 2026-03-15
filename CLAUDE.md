@@ -9,7 +9,8 @@ gosh is an educational Unix shell implemented in Go. It follows bash semantics a
 ## Commands
 
 ```bash
-go build -o gosh .        # build
+go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o gosh .  # build with version
+go build -o gosh .        # build (version defaults to "dev")
 go test ./...              # run all tests
 go test ./lexer/ -v        # run one package's tests
 go test ./lexer/ -run TestSingleQuotes  # run a single test

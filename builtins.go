@@ -26,6 +26,7 @@ var builtins = map[string]builtinFunc{
 	"unset":           builtinUnset,
 	"true":            builtinTrue,
 	"false":           builtinFalse,
+	"version":         builtinVersion,
 	"jobs":            builtinJobs,
 	"fg":              builtinFg,
 	"bg":              builtinBg,
@@ -200,6 +201,12 @@ func builtinHistory(state *shellState, args []string, stdout *os.File) int {
 	for i, entry := range entries {
 		fmt.Fprintf(stdout, "%5d  %s\n", i+1, entry)
 	}
+	return 0
+}
+
+// builtinVersion prints the shell version.
+func builtinVersion(state *shellState, args []string, stdout *os.File) int {
+	fmt.Fprintf(stdout, "gosh %s\n", version)
 	return 0
 }
 

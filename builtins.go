@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,6 +39,8 @@ var builtins = map[string]builtinFunc{
 	"[":               builtinBracket,
 	"read":            builtinRead,
 	"local":           builtinLocal,
+	"alias":           builtinAlias,
+	"unalias":         builtinUnalias,
 	"debug-tokens":    builtinDebugTokens,
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
@@ -204,6 +207,69 @@ func builtinLocal(state *shellState, args []string, stdin, stdout *os.File) int 
 	}
 
 	return 0
+}
+
+// builtinAlias defines or lists aliases.
+//
+//	alias              — list all aliases
+//	alias name=value   — define an alias
+//	alias name         — print the alias definition
+func builtinAlias(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		// List all aliases, sorted.
+		names := make([]string, 0, len(state.aliases))
+		for name := range state.aliases {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(stdout, "alias %s=%q\n", name, state.aliases[name])
+		}
+		return 0
+	}
+
+	status := 0
+	for _, arg := range args {
+		if name, value, ok := strings.Cut(arg, "="); ok {
+			state.aliases[name] = value
+		} else {
+			// Print a single alias.
+			if val, ok := state.aliases[arg]; ok {
+				fmt.Fprintf(stdout, "alias %s=%q\n", arg, val)
+			} else {
+				fmt.Fprintf(os.Stderr, "gosh: alias: %s: not found\n", arg)
+				status = 1
+			}
+		}
+	}
+	return status
+}
+
+// builtinUnalias removes aliases.
+//
+//	unalias name ...
+//	unalias -a          — remove all aliases
+func builtinUnalias(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "gosh: unalias: usage: unalias [-a] name ...")
+		return 1
+	}
+
+	if args[0] == "-a" {
+		state.aliases = make(map[string]string)
+		return 0
+	}
+
+	status := 0
+	for _, name := range args {
+		if _, ok := state.aliases[name]; ok {
+			delete(state.aliases, name)
+		} else {
+			fmt.Fprintf(os.Stderr, "gosh: unalias: %s: not found\n", name)
+			status = 1
+		}
+	}
+	return status
 }
 
 // builtinExport marks variables for export to child processes.

@@ -53,6 +53,14 @@ func (s *shellState) commandCompletions(prefix string) []string {
 		}
 	}
 
+	// Aliases.
+	for name := range s.aliases {
+		if strings.HasPrefix(name, prefix) && !seen[name] {
+			seen[name] = true
+			results = append(results, name+" ")
+		}
+	}
+
 	// User-defined functions.
 	for name := range s.funcs {
 		if strings.HasPrefix(name, prefix) && !seen[name] {

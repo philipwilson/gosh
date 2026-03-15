@@ -26,6 +26,7 @@ var version = "dev"
 type shellState struct {
 	vars             map[string]string    // shell variables
 	exported         map[string]bool      // which variables are exported to children
+	aliases          map[string]string       // alias name → replacement text
 	funcs            map[string]*parser.List // user-defined functions
 	lastStatus       int                  // $? — exit status of last command
 	interactive      bool                 // true if stdin is a terminal
@@ -51,6 +52,7 @@ func newShellState() *shellState {
 	s := &shellState{
 		vars:     make(map[string]string),
 		exported: make(map[string]bool),
+		aliases:  make(map[string]string),
 		funcs:    make(map[string]*parser.List),
 		termFd:   int(os.Stdin.Fd()),
 	}
@@ -500,6 +502,96 @@ func runNonInteractive(state *shellState) {
 	}
 }
 
+// expandAliases performs alias substitution on command-position words
+// in the token stream. A word is in command position if it is the
+// first word or follows |, ;, &&, ||, or &. When an alias value ends
+// with a space, the next word is also checked for alias expansion.
+// A set of already-expanded names prevents infinite recursion.
+func expandAliases(state *shellState, tokens []lexer.Token) []lexer.Token {
+	if len(state.aliases) == 0 {
+		return tokens
+	}
+
+	var result []lexer.Token
+	cmdPos := true // first token is in command position
+
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+
+		if cmdPos && tok.Type == lexer.TOKEN_WORD {
+			expanded := expandOneAlias(state, tok, nil)
+			if expanded != nil {
+				// Check if alias value ends with space — if so, the
+				// next word should also be checked for aliases. We
+				// flag this by keeping cmdPos true.
+				val := state.aliases[tok.Val]
+				trailingSpace := len(val) > 0 && val[len(val)-1] == ' '
+
+				result = append(result, expanded...)
+
+				// Determine cmdPos for the next token.
+				if trailingSpace {
+					cmdPos = true
+				} else {
+					cmdPos = false
+				}
+				continue
+			}
+		}
+
+		result = append(result, tok)
+
+		// Update cmdPos based on the token we just added.
+		switch tok.Type {
+		case lexer.TOKEN_PIPE, lexer.TOKEN_SEMI, lexer.TOKEN_AND,
+			lexer.TOKEN_OR, lexer.TOKEN_AMP:
+			cmdPos = true
+		default:
+			cmdPos = false
+		}
+	}
+
+	return result
+}
+
+// expandOneAlias expands a single alias token, recursively expanding
+// any aliases in the replacement text. The seen set prevents infinite
+// recursion from circular aliases.
+func expandOneAlias(state *shellState, tok lexer.Token, seen map[string]bool) []lexer.Token {
+	name := tok.Val
+	val, ok := state.aliases[name]
+	if !ok || seen[name] {
+		return nil
+	}
+
+	replacement, err := lexer.Lex(val)
+	if err != nil {
+		return nil
+	}
+
+	// Remove the trailing EOF token from the re-lexed replacement.
+	if len(replacement) > 0 && replacement[len(replacement)-1].Type == lexer.TOKEN_EOF {
+		replacement = replacement[:len(replacement)-1]
+	}
+
+	if len(replacement) == 0 {
+		return nil
+	}
+
+	// Recursively expand aliases in the first word of the replacement.
+	if replacement[0].Type == lexer.TOKEN_WORD {
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		seen[name] = true
+		if expanded := expandOneAlias(state, replacement[0], seen); expanded != nil {
+			replacement = append(expanded, replacement[1:]...)
+		}
+	}
+
+	return replacement
+}
+
 // needsMore returns true if the input is incomplete and should be
 // continued on the next line. Checks for trailing backslash, unclosed
 // quotes, trailing operators, and unclosed compound commands.
@@ -557,6 +649,9 @@ func runTokens(state *shellState, tokens []lexer.Token) bool {
 	if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
 		return false
 	}
+
+	// Expand aliases before parsing.
+	tokens = expandAliases(state, tokens)
 
 	if state.debugTokens {
 		for _, tok := range tokens {

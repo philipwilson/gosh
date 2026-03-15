@@ -258,8 +258,30 @@ func main() {
 
 // --- Execution ---
 
+// execList runs pipelines connected by ;, &&, and ||.
+//
+//	;  — always run the next pipeline
+//	&& — run the next pipeline only if the previous succeeded (status 0)
+//	|| — run the next pipeline only if the previous failed (status != 0)
 func execList(state *shellState, list *parser.List) {
-	for _, entry := range list.Entries {
+	for i, entry := range list.Entries {
+		// Decide whether to run this pipeline based on the
+		// previous operator and exit status.
+		if i > 0 {
+			prevOp := list.Entries[i-1].Op
+			switch prevOp {
+			case "&&":
+				if state.lastStatus != 0 {
+					continue
+				}
+			case "||":
+				if state.lastStatus == 0 {
+					continue
+				}
+			}
+			// ";" always falls through.
+		}
+
 		execPipeline(state, entry.Pipeline)
 		if state.exitFlag {
 			return

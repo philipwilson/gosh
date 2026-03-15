@@ -39,7 +39,7 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 
 		// Expand this entry just before execution.
 		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
-		expander.Expand(singleList, state.lookup, state.cmdSubst)
+		expander.Expand(singleList, state.lookup, state.cmdSubst, state.setVar)
 		list.Entries[i] = singleList.Entries[0]
 
 		if state.debugExpanded {
@@ -350,7 +350,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int 
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookup, state.cmdSubst)
+	}, state.lookup, state.cmdSubst, state.setVar)
 
 	// Collect the expanded arg strings.
 	values := tmpCmd.ArgStrings()
@@ -394,7 +394,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) in
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookup, state.cmdSubst)
+	}, state.lookup, state.cmdSubst, state.setVar)
 	subject := tmpCmd.ArgStrings()[0]
 
 	for _, clause := range cmd.Clauses {

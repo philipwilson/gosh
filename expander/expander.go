@@ -49,17 +49,17 @@ type SubstFunc func(cmd string) (string, error)
 
 // Expand walks the AST and performs all expansion phases.
 // It modifies the AST in place.
-func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc) {
+func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
 	for i := range list.Entries {
-		expandPipeline(list.Entries[i].Pipeline, lookup, subst)
+		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar)
 	}
 }
 
-func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
+func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
 	for _, cmd := range pipe.Cmds {
 		switch c := cmd.(type) {
 		case *parser.SimpleCmd:
-			expandCommand(c, lookup, subst)
+			expandCommand(c, lookup, subst, setVar)
 		case *parser.IfCmd:
 			// IfCmd branches are expanded lazily by the executor,
 			// so each branch is only expanded if it's actually taken.
@@ -78,7 +78,7 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc) {
 	}
 }
 
-func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc) {
+func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
 	// Phase 1: tilde expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandTilde(cmd.Assigns[i].Value, lookup)
@@ -92,13 +92,13 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc) {
 
 	// Phase 2a: arithmetic substitution on all words.
 	for i := range cmd.Assigns {
-		cmd.Assigns[i].Value = expandArithInWord(cmd.Assigns[i].Value, lookup)
+		cmd.Assigns[i].Value = expandArithInWord(cmd.Assigns[i].Value, lookup, setVar)
 	}
 	for i := range cmd.Args {
-		cmd.Args[i] = expandArithInWord(cmd.Args[i], lookup)
+		cmd.Args[i] = expandArithInWord(cmd.Args[i], lookup, setVar)
 	}
 	for i := range cmd.Redirects {
-		cmd.Redirects[i].File = expandArithInWord(cmd.Redirects[i].File, lookup)
+		cmd.Redirects[i].File = expandArithInWord(cmd.Redirects[i].File, lookup, setVar)
 	}
 
 	// Phase 2b: command substitution on all words.
@@ -193,7 +193,7 @@ func expandTilde(w lexer.Word, lookup LookupFunc) lexer.Word {
 
 // expandArithInWord replaces ArithSubst and ArithSubstDQ parts with
 // the result of evaluating the arithmetic expression.
-func expandArithInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
+func expandArithInWord(w lexer.Word, lookup LookupFunc, setVar SetFunc) lexer.Word {
 	var result lexer.Word
 
 	for _, part := range w {
@@ -202,7 +202,7 @@ func expandArithInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 			continue
 		}
 
-		val, err := evalArith(part.Text, lookup)
+		val, err := evalArith(part.Text, lookup, setVar)
 		text := "0"
 		if err == nil {
 			text = strconv.FormatInt(val, 10)

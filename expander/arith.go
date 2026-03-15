@@ -6,16 +6,22 @@ import (
 	"unicode"
 )
 
+// SetFunc sets a shell variable to a value. Used by arithmetic
+// assignment operators (=, +=, ++, etc.) to write back results.
+// May be nil if assignment is not supported (e.g., in tests).
+type SetFunc func(name, value string)
+
 // evalArith evaluates an arithmetic expression string and returns the
 // integer result. Variable references (bare names or $name) are resolved
 // via the lookup function. Undefined variables default to 0 (bash behavior).
-func evalArith(expr string, lookup LookupFunc) (int64, error) {
+// Assignment operators use setVar to write back to shell variables.
+func evalArith(expr string, lookup LookupFunc, setVar SetFunc) (int64, error) {
 	tokens, err := tokenizeArith(expr)
 	if err != nil {
 		return 0, err
 	}
-	p := &arithParser{tokens: tokens, lookup: lookup}
-	result, err := p.parseTernary()
+	p := &arithParser{tokens: tokens, lookup: lookup, setVar: setVar}
+	result, err := p.parseAssign()
 	if err != nil {
 		return 0, err
 	}
@@ -129,7 +135,8 @@ func tokenizeArith(expr string) ([]arithToken, error) {
 		if i+1 < len(runes) {
 			two := string(runes[i : i+2])
 			switch two {
-			case "<=", ">=", "==", "!=", "&&", "||", "<<", ">>":
+			case "<=", ">=", "==", "!=", "&&", "||", "<<", ">>",
+				"++", "--", "+=", "-=", "*=", "/=", "%=":
 				tokens = append(tokens, arithToken{aTokOp, two})
 				i += 2
 				continue
@@ -138,7 +145,7 @@ func tokenizeArith(expr string) ([]arithToken, error) {
 
 		// Single-character operators.
 		switch ch {
-		case '+', '-', '*', '/', '%', '<', '>', '!', '~', '&', '|', '^', '?', ':':
+		case '+', '-', '*', '/', '%', '<', '>', '!', '~', '&', '|', '^', '?', ':', '=':
 			tokens = append(tokens, arithToken{aTokOp, string(ch)})
 			i++
 		default:
@@ -163,6 +170,7 @@ type arithParser struct {
 	tokens []arithToken
 	pos    int
 	lookup LookupFunc
+	setVar SetFunc
 }
 
 func (p *arithParser) peek() arithToken {
@@ -178,6 +186,69 @@ func (p *arithParser) next() arithToken {
 		p.pos++
 	}
 	return tok
+}
+
+// setVariable writes a value back to the shell variable. Returns an
+// error if setVar is nil (assignment not supported).
+func (p *arithParser) setVariable(name string, val int64) error {
+	if p.setVar == nil {
+		return fmt.Errorf("arithmetic assignment not supported")
+	}
+	p.setVar(name, strconv.FormatInt(val, 10))
+	return nil
+}
+
+// lookupInt reads a variable and returns its integer value (0 if unset).
+func (p *arithParser) lookupInt(name string) int64 {
+	val := p.lookup(name)
+	if val == "" {
+		return 0
+	}
+	n, _ := strconv.ParseInt(val, 10, 64)
+	return n
+}
+
+// parseAssign: var = expr | var += expr | ... (right-associative)
+func (p *arithParser) parseAssign() (int64, error) {
+	// Check if this is an assignment: ident followed by = or op=.
+	if p.peek().typ == aTokIdent && p.pos+1 < len(p.tokens) {
+		nextOp := p.tokens[p.pos+1].val
+		switch nextOp {
+		case "=", "+=", "-=", "*=", "/=", "%=":
+			name := p.next().val // consume ident
+			p.next()             // consume op
+			rhs, err := p.parseAssign()
+			if err != nil {
+				return 0, err
+			}
+			var result int64
+			switch nextOp {
+			case "=":
+				result = rhs
+			case "+=":
+				result = p.lookupInt(name) + rhs
+			case "-=":
+				result = p.lookupInt(name) - rhs
+			case "*=":
+				result = p.lookupInt(name) * rhs
+			case "/=":
+				if rhs == 0 {
+					return 0, fmt.Errorf("division by zero")
+				}
+				result = p.lookupInt(name) / rhs
+			case "%=":
+				if rhs == 0 {
+					return 0, fmt.Errorf("division by zero")
+				}
+				result = p.lookupInt(name) % rhs
+			}
+			if err := p.setVariable(name, result); err != nil {
+				return 0, err
+			}
+			return result, nil
+		}
+	}
+	return p.parseTernary()
 }
 
 // parseTernary: expr ? expr : expr
@@ -443,10 +514,27 @@ func (p *arithParser) parseMultiplicative() (int64, error) {
 	return left, nil
 }
 
-// parseUnary: (+ | - | ! | ~) unary | primary
+// parseUnary: (+ | - | ! | ~ | ++ | --) unary | postfix
 func (p *arithParser) parseUnary() (int64, error) {
 	op := p.peek().val
 	switch op {
+	case "++", "--":
+		// Pre-increment/decrement: ++var or --var.
+		p.next()
+		if p.peek().typ != aTokIdent {
+			return 0, fmt.Errorf("expected variable after %s", op)
+		}
+		name := p.next().val
+		val := p.lookupInt(name)
+		if op == "++" {
+			val++
+		} else {
+			val--
+		}
+		if err := p.setVariable(name, val); err != nil {
+			return 0, err
+		}
+		return val, nil
 	case "+":
 		p.next()
 		return p.parseUnary()
@@ -472,7 +560,38 @@ func (p *arithParser) parseUnary() (int64, error) {
 		}
 		return ^val, nil
 	}
-	return p.parsePrimary()
+	return p.parsePostfix()
+}
+
+// parsePostfix: primary (++ | --)?
+func (p *arithParser) parsePostfix() (int64, error) {
+	// Remember position before parsePrimary to check if it was an ident.
+	startPos := p.pos
+	val, err := p.parsePrimary()
+	if err != nil {
+		return 0, err
+	}
+
+	// Check for post-increment/decrement. Only valid after an identifier.
+	if startPos < len(p.tokens) && p.tokens[startPos].typ == aTokIdent {
+		op := p.peek().val
+		if op == "++" || op == "--" {
+			name := p.tokens[startPos].val
+			p.next() // consume ++ or --
+			oldVal := val
+			if op == "++" {
+				val++
+			} else {
+				val--
+			}
+			if err := p.setVariable(name, val); err != nil {
+				return 0, err
+			}
+			return oldVal, nil // post-increment returns the old value
+		}
+	}
+
+	return val, nil
 }
 
 // parsePrimary: number | variable | ( expr )

@@ -70,6 +70,31 @@ func tcsetattr(fd int, t *termios) error {
 // makeRaw modifies a termios to disable canonical mode, echo,
 // signals, and extended processing. Sets VMIN=1, VTIME=0 so
 // reads return one byte at a time.
+// winsize matches the struct winsize used by TIOCGWINSZ.
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
+const ioctlGetWinsz = 0x40087468 // TIOCGWINSZ
+
+// termWidth returns the terminal width in columns, or -1 on error.
+func termWidth(fd int) int {
+	var ws winsize
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(ioctlGetWinsz),
+		uintptr(unsafe.Pointer(&ws)),
+	)
+	if errno != 0 {
+		return -1
+	}
+	return int(ws.Col)
+}
+
 func makeRaw(t *termios) {
 	t.Iflag &^= flagICRNL
 	t.Oflag &^= flagOPOST

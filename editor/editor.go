@@ -29,12 +29,17 @@ import (
 	"syscall"
 )
 
+// CompleteFunc takes the current line and cursor position, and returns
+// a list of possible completions for the word under the cursor.
+type CompleteFunc func(line string, pos int) []string
+
 // Editor handles line editing with history support.
 type Editor struct {
-	History *History
-	fd      int
-	in      *os.File
-	orig    termios
+	History  *History
+	Complete CompleteFunc
+	fd       int
+	in       *os.File
+	orig     termios
 }
 
 // New creates an Editor that reads from the given file descriptor
@@ -88,6 +93,7 @@ func (e *Editor) edit(prompt string) (string, error) {
 	pos := 0
 	histPos := e.History.Len() // one past the end = "current input"
 	savedLine := ""            // saves current input when browsing history
+	lastWasTab := false        // for double-tab candidate listing
 
 	refresh := func() {
 		// Move to column 0, write prompt + buffer, clear to end of line,
@@ -185,6 +191,10 @@ func (e *Editor) edit(prompt string) (string, error) {
 				refresh()
 			}
 
+		case keyTab:
+			e.handleTab(&buf, &pos, prompt, refresh, &lastWasTab)
+			continue
+
 		case keyCtrlL:
 			fmt.Fprintf(os.Stderr, "\x1b[2J\x1b[H")
 			refresh()
@@ -223,7 +233,111 @@ func (e *Editor) edit(prompt string) (string, error) {
 				refresh()
 			}
 		}
+		lastWasTab = false
 	}
+}
+
+// handleTab performs tab completion using the Complete callback.
+func (e *Editor) handleTab(buf *[]rune, pos *int, prompt string, refresh func(), lastWasTab *bool) {
+	if e.Complete == nil {
+		return
+	}
+
+	line := string(*buf)
+	candidates := e.Complete(line, *pos)
+	if len(candidates) == 0 {
+		fmt.Fprintf(os.Stderr, "\a") // bell
+		return
+	}
+
+	// Find the word start (scan backward from pos).
+	wordStart := *pos
+	for wordStart > 0 && (*buf)[wordStart-1] != ' ' {
+		wordStart--
+	}
+	prefix := string((*buf)[wordStart:*pos])
+
+	if len(candidates) == 1 {
+		// Single match: replace the partial word with the completion.
+		completion := candidates[0]
+		tail := append([]rune(completion), (*buf)[*pos:]...)
+		*buf = append((*buf)[:wordStart], tail...)
+		*pos = wordStart + len([]rune(completion))
+		refresh()
+		return
+	}
+
+	// Multiple matches: insert the longest common prefix.
+	lcp := longestCommonPrefix(candidates)
+	if len(lcp) > len(prefix) {
+		tail := append([]rune(lcp), (*buf)[*pos:]...)
+		*buf = append((*buf)[:wordStart], tail...)
+		*pos = wordStart + len([]rune(lcp))
+		refresh()
+		*lastWasTab = false
+		return
+	}
+
+	// No new characters to insert. On double-tab, display candidates.
+	if !*lastWasTab {
+		*lastWasTab = true
+		fmt.Fprintf(os.Stderr, "\a") // bell on first tab with no progress
+		return
+	}
+
+	// Double-tab: display candidate list.
+	*lastWasTab = false
+	e.displayCandidates(candidates, prompt, string(*buf), *pos, len(*buf))
+	refresh()
+}
+
+// displayCandidates shows completion candidates below the current line,
+// formatted in columns based on terminal width.
+func (e *Editor) displayCandidates(candidates []string, prompt, buf string, pos, bufLen int) {
+	width := termWidth(e.fd)
+	if width <= 0 {
+		width = 80
+	}
+
+	// Find the longest candidate to determine column width.
+	maxLen := 0
+	for _, c := range candidates {
+		if len(c) > maxLen {
+			maxLen = len(c)
+		}
+	}
+	colWidth := maxLen + 2 // 2 spaces between columns
+	cols := width / colWidth
+	if cols < 1 {
+		cols = 1
+	}
+
+	fmt.Fprintf(os.Stderr, "\r\n")
+	for i, c := range candidates {
+		if i > 0 && i%cols == 0 {
+			fmt.Fprintf(os.Stderr, "\r\n")
+		}
+		fmt.Fprintf(os.Stderr, "%-*s", colWidth, c)
+	}
+	fmt.Fprintf(os.Stderr, "\r\n")
+}
+
+// longestCommonPrefix returns the longest string that is a prefix of
+// all the given strings.
+func longestCommonPrefix(strs []string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	prefix := strs[0]
+	for _, s := range strs[1:] {
+		for i := 0; i < len(prefix); i++ {
+			if i >= len(s) || s[i] != prefix[i] {
+				prefix = prefix[:i]
+				break
+			}
+		}
+	}
+	return prefix
 }
 
 // Key constants for special keys (negative values to avoid
@@ -248,6 +362,7 @@ const (
 	keyCtrlU     = -17
 	keyCtrlW     = -18
 	keyCtrlL     = -19
+	keyTab       = -20
 )
 
 // readByte reads a single byte from the terminal, retrying on EINTR.
@@ -300,6 +415,8 @@ func (e *Editor) readKey() (int, error) {
 		return keyCtrlL, nil
 	case ch == 21: // Ctrl-U
 		return keyCtrlU, nil
+	case ch == 9: // Tab
+		return keyTab, nil
 	case ch == 23: // Ctrl-W
 		return keyCtrlW, nil
 	case ch == 27: // ESC — start of escape sequence

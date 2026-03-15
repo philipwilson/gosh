@@ -173,6 +173,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "gosh: falling back to simple input")
 		} else {
 			state.ed = ed
+			state.ed.Complete = state.complete
 			defer ed.Close()
 		}
 	}

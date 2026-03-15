@@ -68,6 +68,31 @@ func tcsetattr(fd int, t *termios) error {
 	return nil
 }
 
+// winsize matches the struct winsize used by TIOCGWINSZ.
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
+const ioctlGetWinsz = 0x5413 // TIOCGWINSZ
+
+// termWidth returns the terminal width in columns, or -1 on error.
+func termWidth(fd int) int {
+	var ws winsize
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(ioctlGetWinsz),
+		uintptr(unsafe.Pointer(&ws)),
+	)
+	if errno != 0 {
+		return -1
+	}
+	return int(ws.Col)
+}
+
 func makeRaw(t *termios) {
 	t.Iflag &^= flagICRNL
 	t.Oflag &^= flagOPOST

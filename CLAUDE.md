@@ -36,7 +36,7 @@ Input → Lexer → []Token → Parser → AST → Expander → Executor
 
 ## Key Design Details
 
-- `os.StartProcess` / `syscall` for process management, not `os/exec.Cmd` — the plumbing should be visible. Source split: `main.go` (state/REPL), `exec.go` (execution), `builtins.go` (builtins), `jobs.go` (job table), `terminal.go` (ioctl wrappers)
+- `os.StartProcess` / `syscall` for process management, not `os/exec.Cmd` — the plumbing should be visible. Source split: `main.go` (state/REPL), `exec.go` (execution), `builtins.go` (builtins), `jobs.go` (job table), `terminal.go` (ioctl wrappers), `complete.go` (tab completion)
 - `exec.LookPath` is used for PATH resolution
 - Phases are separate packages with explicit data passed between them (tokens, AST nodes with `lexer.Word` parts)
 - Redirections override pipe defaults (e.g., `sort < file | head` uses file as sort's stdin). Supports fd-specific redirects (`2>file`, `2>>file`) and fd duplication (`2>&1`, `>&2`)
@@ -55,4 +55,5 @@ The `editor/` package provides interactive line editing and command history:
 - **Terminal control** (`terminal_darwin.go`, `terminal_linux.go`): Platform-specific `tcgetattr`/`tcsetattr` via ioctl. Raw mode disables ICANON, ECHO, ISIG, IEXTEN, ICRNL, OPOST; sets VMIN=1/VTIME=0. Raw mode is active only during editing — restored before running child processes.
 - **History** (`history.go`): Persists to `~/.gosh_history`. Skips consecutive duplicates and blank lines. Capped at 1000 entries. File created with mode 0600.
 - **Editor** (`editor.go`): Emacs-style key bindings — Ctrl-A/E (Home/End), Ctrl-B/F (Left/Right), Ctrl-K/U (kill to EOL/BOL), Ctrl-W (kill word), Ctrl-L (clear screen), Ctrl-C (cancel), Ctrl-D (EOF on empty / delete char). Up/Down arrows navigate history. Escape sequences decoded for arrow keys, Home/End, Delete.
+- **Tab completion** (`editor.go` + `complete.go`): Editor accepts a `CompleteFunc` callback from the shell. Command-position words (first word or after `|`, `;`, `&`) complete from builtins + PATH executables. Argument-position words complete filenames (directories get `/` suffix). Single match inserts directly with trailing space or `/`. Multiple matches insert the longest common prefix; double-tab displays all candidates in columns (using `TIOCGWINSZ` for terminal width).
 - Non-interactive mode (piped input) falls back to `bufio.Scanner` with no editing.

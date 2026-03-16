@@ -151,7 +151,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline, stderr *os.File) {
 			}
 		} else {
 			// Compound command: run in goroutine with cloned state.
-			clone := cloneShellState(state)
+			clone := state.clone()
 			body := cmd
 			cmdIn, cmdOut := sin, sout
 			if i > 0 {
@@ -273,7 +273,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stder
 		} else {
 			// Compound command: run in goroutine with cloned state.
 			infos[i] = procInfo{isCompound: true}
-			clone := cloneShellState(state)
+			clone := state.clone()
 			idx := i
 			body := cmd
 			cmdIn, cmdOut := sin, sout

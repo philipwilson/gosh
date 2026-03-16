@@ -24,70 +24,27 @@ func execBraceGroup(state *shellState, cmd *parser.BraceGroupCmd, stdin, stdout,
 // execSubshell runs commands in an isolated variable scope.
 // Variable changes inside the subshell do not affect the parent.
 func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, stderr *os.File) int {
-	// Save shell state.
-	savedVars := make(map[string]string, len(state.vars))
-	for k, v := range state.vars {
-		savedVars[k] = v
-	}
-	savedArrays := make(map[string][]string, len(state.arrays))
-	for k, v := range state.arrays {
-		cp := make([]string, len(v))
-		copy(cp, v)
-		savedArrays[k] = cp
-	}
-	savedAssocArrays := make(map[string]map[string]string, len(state.assocArrays))
-	for k, m := range state.assocArrays {
-		cp := make(map[string]string, len(m))
-		for mk, mv := range m {
-			cp[mk] = mv
-		}
-		savedAssocArrays[k] = cp
-	}
-	savedAttrs := make(map[string]uint8, len(state.attrs))
-	for k, v := range state.attrs {
-		savedAttrs[k] = v
-	}
-	savedFuncs := make(map[string]*parser.List, len(state.funcs))
-	for k, v := range state.funcs {
-		savedFuncs[k] = v
-	}
-	savedAliases := make(map[string]string, len(state.aliases))
-	for k, v := range state.aliases {
-		savedAliases[k] = v
-	}
-	savedParams := state.positionalParams
-	savedExitFlag := state.exitFlag
-	savedOptErrexit := state.optErrexit
-	savedOptNounset := state.optNounset
-	savedOptXtrace := state.optXtrace
-	savedOptPipefail := state.optPipefail
-	state.trapsMu.RLock()
-	savedTraps := make(map[string]string, len(state.traps))
-	for k, v := range state.traps {
-		savedTraps[k] = v
-	}
-	state.trapsMu.RUnlock()
+	saved := state.clone()
 
-	// Run the body.
 	body := parser.CloneList(cmd.Body)
 	execList(state, body, stdin, stdout, stderr)
 	status := state.lastStatus
 
-	// Restore shell state.
-	state.vars = savedVars
-	state.arrays = savedArrays
-	state.assocArrays = savedAssocArrays
-	state.attrs = savedAttrs
-	state.funcs = savedFuncs
-	state.aliases = savedAliases
-	state.positionalParams = savedParams
-	state.exitFlag = savedExitFlag
-	state.optErrexit = savedOptErrexit
-	state.optNounset = savedOptNounset
-	state.optXtrace = savedOptXtrace
-	state.optPipefail = savedOptPipefail
+	// Restore shell state from snapshot.
+	state.vars = saved.vars
+	state.arrays = saved.arrays
+	state.assocArrays = saved.assocArrays
+	state.attrs = saved.attrs
+	state.funcs = saved.funcs
+	state.aliases = saved.aliases
+	state.positionalParams = saved.positionalParams
+	state.exitFlag = saved.exitFlag
+	state.optErrexit = saved.optErrexit
+	state.optNounset = saved.optNounset
+	state.optXtrace = saved.optXtrace
+	state.optPipefail = saved.optPipefail
 	state.trapsMu.Lock()
-	state.traps = savedTraps
+	state.traps = saved.traps
 	state.trapsMu.Unlock()
 	state.lastStatus = status
 

@@ -60,7 +60,7 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, 
 					return
 				}
 				defer f.Close()
-				cloned := cloneShellState(state)
+				cloned := state.clone()
 				cloned.substDepth++
 				tokens, err := lexer.Lex(cmdText)
 				if err != nil {
@@ -81,7 +81,7 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, 
 					return
 				}
 				defer f.Close()
-				cloned := cloneShellState(state)
+				cloned := state.clone()
 				cloned.substDepth++
 				tokens, err := lexer.Lex(cmdText)
 				if err != nil {
@@ -104,58 +104,3 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, 
 	}
 }
 
-// cloneShellState creates a deep copy of shell state for use in process
-// substitution goroutines. The clone is isolated: no editor, no jobs,
-// non-interactive.
-func cloneShellState(state *shellState) *shellState {
-	s := &shellState{
-		vars:             make(map[string]string, len(state.vars)),
-		arrays:           make(map[string][]string, len(state.arrays)),
-		assocArrays:      make(map[string]map[string]string, len(state.assocArrays)),
-		attrs:            make(map[string]uint8, len(state.attrs)),
-		aliases:          make(map[string]string, len(state.aliases)),
-		funcs:            make(map[string]*parser.List, len(state.funcs)),
-		traps:            make(map[string]string, len(state.traps)),
-		pendingSignals:   make(map[string]bool),
-		sigCh:            make(chan os.Signal, 8),
-		positionalParams: state.positionalParams,
-		lastStatus:       state.lastStatus,
-		substDepth:       state.substDepth,
-		optErrexit:       state.optErrexit,
-		optNounset:       state.optNounset,
-		optXtrace:        state.optXtrace,
-		optPipefail:      state.optPipefail,
-		termFd:           state.termFd,
-		startTime:        state.startTime,
-	}
-	for k, v := range state.vars {
-		s.vars[k] = v
-	}
-	for k, v := range state.arrays {
-		cp := make([]string, len(v))
-		copy(cp, v)
-		s.arrays[k] = cp
-	}
-	for k, m := range state.assocArrays {
-		cp := make(map[string]string, len(m))
-		for mk, mv := range m {
-			cp[mk] = mv
-		}
-		s.assocArrays[k] = cp
-	}
-	for k, v := range state.attrs {
-		s.attrs[k] = v
-	}
-	for k, v := range state.aliases {
-		s.aliases[k] = v
-	}
-	for k, v := range state.funcs {
-		s.funcs[k] = v
-	}
-	state.trapsMu.RLock()
-	for k, v := range state.traps {
-		s.traps[k] = v
-	}
-	state.trapsMu.RUnlock()
-	return s
-}

@@ -147,6 +147,64 @@ func newShellState() *shellState {
 	return s
 }
 
+// clone returns a deep copy of the shell state. The clone is isolated:
+// changes to maps/slices in the clone do not affect the original.
+// Non-mutable fields (termFd, startTime) are shared. The clone has
+// no editor, no jobs, and is non-interactive (suitable for subshells,
+// pipelines, and process substitution goroutines).
+func (s *shellState) clone() *shellState {
+	c := &shellState{
+		vars:             make(map[string]string, len(s.vars)),
+		arrays:           make(map[string][]string, len(s.arrays)),
+		assocArrays:      make(map[string]map[string]string, len(s.assocArrays)),
+		attrs:            make(map[string]uint8, len(s.attrs)),
+		aliases:          make(map[string]string, len(s.aliases)),
+		funcs:            make(map[string]*parser.List, len(s.funcs)),
+		traps:            make(map[string]string, len(s.traps)),
+		pendingSignals:   make(map[string]bool),
+		sigCh:            make(chan os.Signal, 8),
+		positionalParams: s.positionalParams,
+		lastStatus:       s.lastStatus,
+		substDepth:       s.substDepth,
+		optErrexit:       s.optErrexit,
+		optNounset:       s.optNounset,
+		optXtrace:        s.optXtrace,
+		optPipefail:      s.optPipefail,
+		termFd:           s.termFd,
+		startTime:        s.startTime,
+	}
+	for k, v := range s.vars {
+		c.vars[k] = v
+	}
+	for k, v := range s.arrays {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		c.arrays[k] = cp
+	}
+	for k, m := range s.assocArrays {
+		cp := make(map[string]string, len(m))
+		for mk, mv := range m {
+			cp[mk] = mv
+		}
+		c.assocArrays[k] = cp
+	}
+	for k, v := range s.attrs {
+		c.attrs[k] = v
+	}
+	for k, v := range s.aliases {
+		c.aliases[k] = v
+	}
+	for k, v := range s.funcs {
+		c.funcs[k] = v
+	}
+	s.trapsMu.RLock()
+	for k, v := range s.traps {
+		c.traps[k] = v
+	}
+	s.trapsMu.RUnlock()
+	return c
+}
+
 func (s *shellState) lookup(name string) string {
 	switch name {
 	case "?":

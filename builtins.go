@@ -52,6 +52,8 @@ var builtins = map[string]builtinFunc{
 	"history":         builtinHistory,
 	"set":             builtinSet,
 	"wait":            builtinWait,
+	"kill":            builtinKill,
+	"disown":          builtinDisown,
 	"exec":            builtinExecStub,
 	"let":             builtinLet,
 	"getopts":         builtinGetopts,
@@ -1799,4 +1801,132 @@ func waitJob(state *shellState, j *job) int {
 	}
 	state.removeJob(j.id)
 	return res.status
+}
+
+// builtinKill sends signals to jobs or processes.
+//
+//	kill [-s SIGNAL | -SIGNAL] pid|%job ...
+//	kill -l
+func builtinKill(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "gosh: kill: usage: kill [-s sigspec | -signum] pid | jobspec ... or kill -l")
+		return 2
+	}
+
+	// kill -l: list all signals.
+	if args[0] == "-l" {
+		for _, e := range allSignals() {
+			fmt.Fprintf(stdout, "%2d) SIG%-6s", e.Num, e.Name)
+			if e.Num%4 == 0 {
+				fmt.Fprintln(stdout)
+			}
+		}
+		// Ensure trailing newline.
+		sigs := allSignals()
+		if len(sigs) > 0 && sigs[len(sigs)-1].Num%4 != 0 {
+			fmt.Fprintln(stdout)
+		}
+		return 0
+	}
+
+	// Parse signal spec.
+	sig := syscall.SIGTERM
+	targets := args
+	if len(args) >= 2 && args[0] == "-s" {
+		_, parsed, err := parseSignalSpec(args[1])
+		if err != nil {
+			fmt.Fprintf(stderr, "gosh: kill: %v\n", err)
+			return 2
+		}
+		sig = parsed
+		targets = args[2:]
+	} else if len(args) >= 1 && len(args[0]) > 1 && args[0][0] == '-' && args[0] != "--" {
+		spec := args[0][1:]
+		_, parsed, err := parseSignalSpec(spec)
+		if err != nil {
+			fmt.Fprintf(stderr, "gosh: kill: %v\n", err)
+			return 2
+		}
+		sig = parsed
+		targets = args[1:]
+	}
+
+	if len(targets) == 0 {
+		fmt.Fprintln(stderr, "gosh: kill: usage: kill [-s sigspec | -signum] pid | jobspec ...")
+		return 2
+	}
+
+	status := 0
+	for _, target := range targets {
+		if len(target) > 0 && target[0] == '%' {
+			// Job spec.
+			id, err := parseJobSpec([]string{target})
+			if err != nil {
+				fmt.Fprintf(stderr, "gosh: kill: %v\n", err)
+				status = 1
+				continue
+			}
+			j := state.findJob(id)
+			if j == nil {
+				fmt.Fprintf(stderr, "gosh: kill: %%%d: no such job\n", id)
+				status = 1
+				continue
+			}
+			if err := syscall.Kill(-j.pgid, sig); err != nil {
+				fmt.Fprintf(stderr, "gosh: kill: (%d) - %v\n", j.pgid, err)
+				status = 1
+			}
+		} else {
+			pid, err := strconv.Atoi(target)
+			if err != nil {
+				fmt.Fprintf(stderr, "gosh: kill: %s: arguments must be process or job IDs\n", target)
+				status = 1
+				continue
+			}
+			if err := syscall.Kill(pid, sig); err != nil {
+				fmt.Fprintf(stderr, "gosh: kill: (%d) - %v\n", pid, err)
+				status = 1
+			}
+		}
+	}
+	return status
+}
+
+// builtinDisown removes jobs from the job table.
+//
+//	disown [%job ...]
+//	disown -a
+func builtinDisown(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	if len(args) == 1 && args[0] == "-a" {
+		state.jobs = nil
+		return 0
+	}
+
+	if len(args) == 0 {
+		j := state.currentJob()
+		if j == nil {
+			fmt.Fprintln(stderr, "gosh: disown: no current job")
+			return 1
+		}
+		state.removeJob(j.id)
+		return 0
+	}
+
+	status := 0
+	for _, arg := range args {
+		id, err := parseJobSpec([]string{arg})
+		if err != nil {
+			fmt.Fprintf(stderr, "gosh: disown: %v\n", err)
+			status = 1
+			continue
+		}
+		j := state.findJob(id)
+		if j == nil {
+			fmt.Fprintf(stderr, "gosh: disown: %%%d: no such job\n", id)
+			status = 1
+			continue
+		}
+		state.removeJob(j.id)
+	}
+	return status
 }

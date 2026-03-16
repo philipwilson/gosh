@@ -200,6 +200,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline, stderr *os.File) {
 	state.lastBgPid = pgid
 	fmt.Fprintf(stderr, "[%d] %d\n", j.id, pgid)
 	state.lastStatus = 0
+	state.setArray("PIPESTATUS", []string{"0"})
 }
 
 // execPipeline runs a pipeline of one or more commands.
@@ -210,6 +211,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stder
 
 	if n == 1 {
 		state.lastStatus = execCommand(state, pipe.Cmds[0], stdin, stdout, stderr)
+		state.setArray("PIPESTATUS", []string{strconv.Itoa(state.lastStatus)})
 		return
 	}
 
@@ -241,6 +243,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stder
 
 	var wg sync.WaitGroup
 	compoundStatus := make([]int, n)
+	pipeStatuses := make([]int, n)
 	goroutineOwned := make(map[*os.File]bool)
 
 	for i, cmd := range pipe.Cmds {
@@ -324,6 +327,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stder
 		for _, f := range info.files {
 			f.Close()
 		}
+		pipeStatuses[i] = res.status
 		if res.stopped {
 			anyStopped = true
 		}
@@ -347,6 +351,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stder
 		if !info.isCompound {
 			continue
 		}
+		pipeStatuses[i] = compoundStatus[i]
 		if compoundStatus[i] != 0 {
 			lastNonZero = compoundStatus[i]
 		}
@@ -358,6 +363,13 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stder
 			}
 		}
 	}
+
+	// Set PIPESTATUS array.
+	psArr := make([]string, n)
+	for i, s := range pipeStatuses {
+		psArr[i] = strconv.Itoa(s)
+	}
+	state.setArray("PIPESTATUS", psArr)
 
 	if foreground {
 		tcsetpgrp(state.termFd, state.shellPgid)

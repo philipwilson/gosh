@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -11,22 +12,38 @@ import (
 	"gosh/parser"
 )
 
+// nameToSig maps canonical signal names to their syscall.Signal values.
+var nameToSig = map[string]syscall.Signal{
+	"HUP":  syscall.SIGHUP,
+	"INT":  syscall.SIGINT,
+	"QUIT": syscall.SIGQUIT,
+	"ABRT": syscall.SIGABRT,
+	"KILL": syscall.SIGKILL,
+	"PIPE": syscall.SIGPIPE,
+	"ALRM": syscall.SIGALRM,
+	"TERM": syscall.SIGTERM,
+	"STOP": syscall.SIGSTOP,
+	"TSTP": syscall.SIGTSTP,
+	"CONT": syscall.SIGCONT,
+	"USR1": syscall.SIGUSR1,
+	"USR2": syscall.SIGUSR2,
+}
+
+// numToName maps signal numbers to canonical names, built from nameToSig
+// so it's platform-portable.
+var numToName = func() map[int]string {
+	m := make(map[int]string, len(nameToSig))
+	for name, sig := range nameToSig {
+		m[int(sig)] = name
+	}
+	return m
+}()
+
 // signalName maps an os.Signal to its canonical trap name.
 func signalName(sig os.Signal) string {
 	if s, ok := sig.(syscall.Signal); ok {
-		switch s {
-		case syscall.SIGINT:
-			return "INT"
-		case syscall.SIGTERM:
-			return "TERM"
-		case syscall.SIGHUP:
-			return "HUP"
-		case syscall.SIGQUIT:
-			return "QUIT"
-		case syscall.SIGUSR1:
-			return "USR1"
-		case syscall.SIGUSR2:
-			return "USR2"
+		if name, ok := numToName[int(s)]; ok {
+			return name
 		}
 	}
 	return ""
@@ -36,15 +53,6 @@ func signalName(sig os.Signal) string {
 // "int", "2") to a canonical name and syscall.Signal.
 func parseSignalSpec(spec string) (string, syscall.Signal, error) {
 	upper := strings.ToUpper(strings.TrimPrefix(strings.ToUpper(spec), "SIG"))
-
-	nameToSig := map[string]syscall.Signal{
-		"INT":  syscall.SIGINT,
-		"TERM": syscall.SIGTERM,
-		"HUP":  syscall.SIGHUP,
-		"QUIT": syscall.SIGQUIT,
-		"USR1": syscall.SIGUSR1,
-		"USR2": syscall.SIGUSR2,
-	}
 
 	if sig, ok := nameToSig[upper]; ok {
 		return upper, sig, nil
@@ -58,20 +66,30 @@ func parseSignalSpec(spec string) (string, syscall.Signal, error) {
 
 	// Try numeric.
 	if n, err := strconv.Atoi(spec); err == nil {
-		numToName := map[int]string{
-			1:  "HUP",
-			2:  "INT",
-			3:  "QUIT",
-			15: "TERM",
-			30: "USR1",
-			31: "USR2",
-		}
 		if name, ok := numToName[n]; ok {
 			return name, nameToSig[name], nil
 		}
 	}
 
 	return "", 0, fmt.Errorf("invalid signal specification: %s", spec)
+}
+
+// signalEntry holds a signal number and name for listing.
+type signalEntry struct {
+	Num  int
+	Name string
+}
+
+// allSignals returns all known signals sorted by number.
+func allSignals() []signalEntry {
+	entries := make([]signalEntry, 0, len(nameToSig))
+	for name, sig := range nameToSig {
+		entries = append(entries, signalEntry{Num: int(sig), Name: name})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Num < entries[j].Num
+	})
+	return entries
 }
 
 // runPendingTraps runs any pending signal trap handlers.

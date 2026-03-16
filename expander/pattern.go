@@ -9,11 +9,15 @@ import (
 // patternMatch is like filepath.Match but allows * to match /
 // (which filepath.Match treats as a path separator). Parameter
 // expansion patterns are string patterns, not path patterns.
+// When extglob is active, extglob patterns are matched via regex.
 func patternMatch(pattern, s string) bool {
 	// Replace / with a placeholder that * will match.
 	const ph = "\x00"
 	p := strings.ReplaceAll(pattern, "/", ph)
 	s = strings.ReplaceAll(s, "/", ph)
+	if activeGlobOpts.Extglob && HasExtglob(p) {
+		return ExtglobMatch(p, s)
+	}
 	matched, _ := filepath.Match(p, s)
 	return matched
 }

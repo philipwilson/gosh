@@ -46,6 +46,8 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, std
 	state.shoptNullglob = saved.shoptNullglob
 	state.shoptFailglob = saved.shoptFailglob
 	state.shoptNocaseglob = saved.shoptNocaseglob
+	state.shoptExtglob = saved.shoptExtglob
+	lexer.ExtglobEnabled = state.shoptExtglob
 	state.trapsMu.Lock()
 	state.traps = saved.traps
 	state.trapsMu.Unlock()
@@ -188,6 +190,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout, stderr *os.Fi
 	expander.SetGlobOptions(expander.GlobOptions{
 		Nullglob:   state.shoptNullglob,
 		Nocaseglob: state.shoptNocaseglob,
+		Extglob:    state.shoptExtglob,
 	})
 	expander.Expand(&parser.List{
 		Entries: []parser.ListEntry{{
@@ -294,6 +297,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout, stderr *os.
 	expander.SetGlobOptions(expander.GlobOptions{
 		Nullglob:   state.shoptNullglob,
 		Nocaseglob: state.shoptNocaseglob,
+		Extglob:    state.shoptExtglob,
 	})
 	expander.Expand(&parser.List{
 		Entries: []parser.ListEntry{{
@@ -308,9 +312,11 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout, stderr *os.
 			// glob metacharacters are used for matching, not file expansion.
 			pattern := expander.ExpandWord(parser.CloneWord(pat), state.lookup)
 
-			matched, err := filepath.Match(pattern, subject)
-			if err != nil {
-				continue
+			var matched bool
+			if state.shoptExtglob && expander.HasExtglob(pattern) {
+				matched = expander.ExtglobMatch(pattern, subject)
+			} else {
+				matched, _ = filepath.Match(pattern, subject)
 			}
 			if matched {
 				body := parser.CloneList(clause.Body)
@@ -339,6 +345,7 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout, stderr 
 	expander.SetGlobOptions(expander.GlobOptions{
 		Nullglob:   state.shoptNullglob,
 		Nocaseglob: state.shoptNocaseglob,
+		Extglob:    state.shoptExtglob,
 	})
 	expander.Expand(&parser.List{
 		Entries: []parser.ListEntry{{

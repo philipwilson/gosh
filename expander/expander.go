@@ -55,6 +55,7 @@ type GlobOptions struct {
 	Nullglob   bool    // unmatched globs expand to nothing
 	Failglob   bool    // unmatched globs are errors
 	Nocaseglob bool    // case-insensitive globbing
+	Extglob    bool    // extended globbing: ?(pat), *(pat), +(pat), @(pat), !(pat)
 	FailErr    *string // set when failglob triggers; executor checks this
 }
 
@@ -345,9 +346,24 @@ func expandGlobsInArgs(args []lexer.Word) []lexer.Word {
 		}
 
 		pattern := buildGlobPattern(w)
+		useExtglob := activeGlobOpts.Extglob && HasExtglob(pattern)
 		var matches []string
 		var err error
-		if activeGlobOpts.Nocaseglob {
+		if useExtglob && activeGlobOpts.Nocaseglob {
+			matches, err = caseInsensitiveExtglobGlob(pattern)
+		} else if useExtglob {
+			broadened := broadenExtglob(pattern)
+			matches, err = filepath.Glob(broadened)
+			if err == nil {
+				var filtered []string
+				for _, m := range matches {
+					if ExtglobMatchPath(pattern, m) {
+						filtered = append(filtered, m)
+					}
+				}
+				matches = filtered
+			}
+		} else if activeGlobOpts.Nocaseglob {
 			matches, err = caseInsensitiveGlob(pattern)
 		} else {
 			matches, err = filepath.Glob(pattern)
@@ -427,13 +443,16 @@ func caseInsensitiveGlob(pattern string) ([]string, error) {
 }
 
 // hasUnquotedGlob returns true if the word contains any unquoted
-// glob metacharacters (*, ?, [).
+// glob metacharacters (*, ?, [) or extglob patterns.
 func hasUnquotedGlob(w lexer.Word) bool {
 	for _, part := range w {
 		if part.Quote != lexer.Unquoted {
 			continue
 		}
 		if strings.ContainsAny(part.Text, "*?[") {
+			return true
+		}
+		if activeGlobOpts.Extglob && HasExtglob(part.Text) {
 			return true
 		}
 	}

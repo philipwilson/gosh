@@ -140,6 +140,7 @@ func runScriptWithIO(state *shellState, path string, stdin, stdout, stderr *os.F
 			}
 		}
 
+		lexer.ExtglobEnabled = state.shoptExtglob
 		tokens, err := lexer.Lex(line)
 		if err != nil {
 			fmt.Fprintf(stderr, "gosh: %v\n", err)
@@ -182,6 +183,7 @@ func runLine(state *shellState, line string) bool {
 
 // runLineWithIO lexes, parses, and executes a line with the given I/O.
 func runLineWithIO(state *shellState, line string, stdin, stdout, stderr *os.File) bool {
+	lexer.ExtglobEnabled = state.shoptExtglob
 	tokens, err := lexer.Lex(line)
 	if err != nil {
 		fmt.Fprintf(stderr, "gosh: %v\n", err)
@@ -218,6 +220,7 @@ func runStringWithIO(state *shellState, input string, stdin, stdout, stderr *os.
 			}
 		}
 
+		lexer.ExtglobEnabled = state.shoptExtglob
 		tokens, err := lexer.Lex(line)
 		if err != nil {
 			fmt.Fprintf(stderr, "gosh: %v\n", err)
@@ -322,6 +325,7 @@ func runInteractive(state *shellState) {
 			}
 		}
 
+		lexer.ExtglobEnabled = state.shoptExtglob
 		tokens, err := lexer.Lex(line)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
@@ -385,6 +389,7 @@ func runNonInteractive(state *shellState) {
 			}
 		}
 
+		lexer.ExtglobEnabled = state.shoptExtglob
 		tokens, err := lexer.Lex(line)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
@@ -478,6 +483,7 @@ func expandOneAlias(state *shellState, tok lexer.Token, seen map[string]bool) []
 		return nil
 	}
 
+	lexer.ExtglobEnabled = state.shoptExtglob
 	replacement, err := lexer.Lex(val)
 	if err != nil {
 		return nil

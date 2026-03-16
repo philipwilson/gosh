@@ -72,6 +72,7 @@ type shellState struct {
 	shoptNullglob    bool                 // shopt -s nullglob: unmatched globs expand to nothing
 	shoptFailglob    bool                 // shopt -s failglob: unmatched globs are errors
 	shoptNocaseglob  bool                 // shopt -s nocaseglob: case-insensitive globbing
+	shoptExtglob     bool                 // shopt -s extglob: extended globbing patterns
 	noErrexit        int                  // >0 suppresses errexit (condition contexts, &&/|| LHS)
 	nounsetError     bool                 // set when a nounset violation occurs during expansion
 	readonlyError    bool                 // set when a readonly assignment is attempted
@@ -178,6 +179,7 @@ func (s *shellState) clone() *shellState {
 		shoptNullglob:    s.shoptNullglob,
 		shoptFailglob:    s.shoptFailglob,
 		shoptNocaseglob:  s.shoptNocaseglob,
+		shoptExtglob:     s.shoptExtglob,
 		termFd:           s.termFd,
 		startTime:        s.startTime,
 	}
@@ -740,6 +742,7 @@ func (s *shellState) formatPrompt(raw string) string {
 // cmdSubst executes a command string and returns its stdout output
 // with trailing newlines stripped. Used for $(cmd) and `cmd` expansion.
 func (s *shellState) cmdSubst(cmd string) (string, error) {
+	lexer.ExtglobEnabled = s.shoptExtglob
 	tokens, err := lexer.Lex(cmd)
 	if err != nil {
 		return "", err

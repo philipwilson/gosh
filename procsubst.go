@@ -62,6 +62,7 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, 
 				defer f.Close()
 				cloned := state.clone()
 				cloned.substDepth++
+				lexer.ExtglobEnabled = cloned.shoptExtglob
 				tokens, err := lexer.Lex(cmdText)
 				if err != nil {
 					return
@@ -83,6 +84,7 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, 
 				defer f.Close()
 				cloned := state.clone()
 				cloned.substDepth++
+				lexer.ExtglobEnabled = cloned.shoptExtglob
 				tokens, err := lexer.Lex(cmdText)
 				if err != nil {
 					return

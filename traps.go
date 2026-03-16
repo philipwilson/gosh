@@ -134,6 +134,7 @@ func (s *shellState) runTrapWithIO(name string, stdin, stdout, stderr *os.File) 
 		return
 	}
 	s.trapRunning = true
+	lexer.ExtglobEnabled = s.shoptExtglob
 	tokens, err := lexer.Lex(cmd)
 	if err == nil {
 		tokens = expandAliases(s, tokens)

@@ -444,6 +444,7 @@ var helpEntries = map[string]builtinHelp{
       -u    Disable (unset) each named option
 
     Available options:
+      extglob      Extended pattern matching: ?(p), *(p), +(p), @(p), !(p)
       failglob     Non-matching globs produce an error
       nocaseglob   Case-insensitive pathname expansion
       nullglob     Non-matching globs expand to nothing

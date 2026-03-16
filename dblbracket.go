@@ -189,12 +189,12 @@ func (p *bracketParser) parsePrimary() (bool, error) {
 		p.next()
 		rightWord := p.peekWord()
 		right := p.next()
-		return bracketPatternMatch(left, right, rightWord), nil
+		return bracketPatternMatch(p.state, left, right, rightWord), nil
 	case "!=":
 		p.next()
 		rightWord := p.peekWord()
 		right := p.next()
-		return !bracketPatternMatch(left, right, rightWord), nil
+		return !bracketPatternMatch(p.state, left, right, rightWord), nil
 	case "<":
 		p.next()
 		right := p.next()
@@ -220,8 +220,11 @@ func (p *bracketParser) parsePrimary() (bool, error) {
 // bracketPatternMatch performs pattern matching for [[ == ]] and [[ != ]].
 // If the right-hand word has any quoted parts, the comparison is literal.
 // If entirely unquoted, glob-style pattern matching is used.
-func bracketPatternMatch(left, right string, rightWord lexer.Word) bool {
+func bracketPatternMatch(state *shellState, left, right string, rightWord lexer.Word) bool {
 	if isFullyUnquoted(rightWord) {
+		if state.shoptExtglob && expander.HasExtglob(right) {
+			return expander.ExtglobMatch(right, left)
+		}
 		matched, _ := filepath.Match(right, left)
 		return matched
 	}

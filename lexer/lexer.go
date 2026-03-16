@@ -36,6 +36,11 @@ import (
 	"unicode/utf8"
 )
 
+// ExtglobEnabled controls whether the lexer recognizes extended
+// globbing syntax: ?(pat), *(pat), +(pat), @(pat), !(pat).
+// Set by the shopt builtin.
+var ExtglobEnabled bool
+
 // QuoteContext indicates how a piece of text was quoted in the input.
 // The expander uses this to decide whether to perform variable
 // expansion and (later) glob expansion.
@@ -566,6 +571,13 @@ func (l *lexer) readWord() (Word, error) {
 					return nil, err
 				}
 				parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
+			}
+
+		case ch == '(' && ExtglobEnabled && len(buf) > 0 && isExtglobPrefix(buf[len(buf)-1]):
+			l.next() // consume (
+			buf = append(buf, '(')
+			if err := l.readExtglobBody(&buf); err != nil {
+				return nil, err
 			}
 
 		case isOperator(ch) || ch == ' ' || ch == '\t' || ch == '\n':
@@ -1135,4 +1147,66 @@ func LexHeredocBody(body string) (Word, error) {
 
 func isOperator(ch rune) bool {
 	return ch == '|' || ch == '&' || ch == ';' || ch == '>' || ch == '<' || ch == '(' || ch == ')'
+}
+
+// isExtglobPrefix returns true if ch can precede '(' in an extglob operator.
+func isExtglobPrefix(ch rune) bool {
+	return ch == '?' || ch == '*' || ch == '+' || ch == '@' || ch == '!'
+}
+
+// readExtglobBody reads the contents of an extglob group after the
+// opening '(' has been consumed. Reads until the matching ')' is found,
+// tracking parenthesis depth. The closing ')' is appended to buf.
+func (l *lexer) readExtglobBody(buf *[]rune) error {
+	depth := 1
+	for {
+		ch, ok := l.next()
+		if !ok {
+			return fmt.Errorf("unterminated extglob pattern")
+		}
+		*buf = append(*buf, ch)
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return nil
+			}
+		case '\\':
+			esc, ok := l.next()
+			if !ok {
+				return fmt.Errorf("unexpected end of input after \\ in extglob")
+			}
+			*buf = append(*buf, esc)
+		case '\'':
+			for {
+				c, ok := l.next()
+				if !ok {
+					return fmt.Errorf("unterminated single quote in extglob")
+				}
+				*buf = append(*buf, c)
+				if c == '\'' {
+					break
+				}
+			}
+		case '"':
+			for {
+				c, ok := l.next()
+				if !ok {
+					return fmt.Errorf("unterminated double quote in extglob")
+				}
+				*buf = append(*buf, c)
+				if c == '"' {
+					break
+				}
+				if c == '\\' {
+					esc, ok := l.next()
+					if ok {
+						*buf = append(*buf, esc)
+					}
+				}
+			}
+		}
+	}
 }

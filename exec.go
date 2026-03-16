@@ -49,6 +49,7 @@ func execList(state *shellState, list *parser.List, stdin, stdout, stderr *os.Fi
 			Nullglob:   state.shoptNullglob,
 			Failglob:   state.shoptFailglob,
 			Nocaseglob: state.shoptNocaseglob,
+			Extglob:    state.shoptExtglob,
 			FailErr:    &failErr,
 		})
 		expander.Expand(singleList, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet, state.isAssoc)

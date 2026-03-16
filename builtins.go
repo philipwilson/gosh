@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"gosh/expander"
+	"gosh/lexer"
 )
 
 // builtinFunc is the signature for all builtin commands.
@@ -1631,6 +1632,7 @@ func builtinShopt(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 		val  *bool
 	}
 	opts := []shoptEntry{
+		{"extglob", &state.shoptExtglob},
 		{"failglob", &state.shoptFailglob},
 		{"nocaseglob", &state.shoptNocaseglob},
 		{"nullglob", &state.shoptNullglob},
@@ -1683,6 +1685,8 @@ func builtinShopt(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 			}
 			*o.val = enable
 		}
+		// Sync lexer extglob state.
+		lexer.ExtglobEnabled = state.shoptExtglob
 		return status
 	}
 

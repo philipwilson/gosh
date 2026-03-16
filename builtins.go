@@ -1619,7 +1619,7 @@ func printSetOptions(state *shellState, stdout *os.File) {
 		if o.val {
 			onOff = "on"
 		}
-		fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+		fmt.Fprintf(stdout, "%-15s\t%s\n", o.name, onOff)
 	}
 }
 
@@ -1645,7 +1645,7 @@ func builtinShopt(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 			if *o.val {
 				onOff = "on"
 			}
-			fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+			fmt.Fprintf(stdout, "%-15s\t%s\n", o.name, onOff)
 		}
 		return 0
 	}
@@ -1670,7 +1670,7 @@ func builtinShopt(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 					if *o.val {
 						onOff = "on"
 					}
-					fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+					fmt.Fprintf(stdout, "%-15s\t%s\n", o.name, onOff)
 				}
 			}
 			return 0
@@ -1703,7 +1703,7 @@ func builtinShopt(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 		if *o.val {
 			onOff = "on"
 		}
-		fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+		fmt.Fprintf(stdout, "%-15s\t%s\n", o.name, onOff)
 		if !*o.val {
 			status = 1
 		}

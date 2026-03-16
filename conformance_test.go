@@ -99,6 +99,7 @@ func allConformanceCases() []conformanceCase {
 	cases = append(cases, heredocCases()...)
 	cases = append(cases, processCases()...)
 	cases = append(cases, miscCases()...)
+	cases = append(cases, extglobCases()...)
 	return cases
 }
 
@@ -661,5 +662,64 @@ func miscCases() []conformanceCase {
 
 		// String length
 		{"misc/length", `x=hello; echo ${#x}`, ""},
+	}
+}
+
+// --- Extglob ---
+// Note: shopt -s extglob must be on a separate line from the extglob
+// pattern usage so the lexer picks up the setting before lexing.
+
+func extglobCases() []conformanceCase {
+	return []conformanceCase{
+		// shopt listing
+		{"extglob/shopt_list", `shopt extglob`, ""},
+		{"extglob/shopt_enable", "shopt -s extglob\nshopt extglob", ""},
+
+		// @(pat) — exactly one
+		{"extglob/at_match", "shopt -s extglob\n" + `[[ foo == @(foo|bar) ]] && echo yes || echo no`, ""},
+		{"extglob/at_nomatch", "shopt -s extglob\n" + `[[ baz == @(foo|bar) ]] && echo yes || echo no`, ""},
+
+		// ?(pat) — zero or one
+		{"extglob/q_empty", "shopt -s extglob\n" + `[[ "" == ?(foo) ]] && echo yes || echo no`, ""},
+		{"extglob/q_one", "shopt -s extglob\n" + `[[ foo == ?(foo) ]] && echo yes || echo no`, ""},
+		{"extglob/q_two", "shopt -s extglob\n" + `[[ foofoo == ?(foo) ]] && echo yes || echo no`, ""},
+
+		// *(pat) — zero or more
+		{"extglob/star_empty", "shopt -s extglob\n" + `[[ "" == *(a) ]] && echo yes || echo no`, ""},
+		{"extglob/star_many", "shopt -s extglob\n" + `[[ aaa == *(a) ]] && echo yes || echo no`, ""},
+		{"extglob/star_multi", "shopt -s extglob\n" + `[[ ababab == *(ab) ]] && echo yes || echo no`, ""},
+		{"extglob/star_nomatch", "shopt -s extglob\n" + `[[ abc == *(ab) ]] && echo yes || echo no`, ""},
+
+		// +(pat) — one or more
+		{"extglob/plus_one", "shopt -s extglob\n" + `[[ a == +(a) ]] && echo yes || echo no`, ""},
+		{"extglob/plus_many", "shopt -s extglob\n" + `[[ aaa == +(a) ]] && echo yes || echo no`, ""},
+		{"extglob/plus_empty", "shopt -s extglob\n" + `[[ "" == +(a) ]] && echo yes || echo no`, ""},
+		{"extglob/plus_multi_alt", "shopt -s extglob\n" + `[[ abcabc == +(abc|def) ]] && echo yes || echo no`, ""},
+
+		// !(pat) — negation
+		{"extglob/neg_match", "shopt -s extglob\n" + `[[ hello == !(world) ]] && echo yes || echo no`, ""},
+		{"extglob/neg_nomatch", "shopt -s extglob\n" + `[[ world == !(world) ]] && echo yes || echo no`, ""},
+		{"extglob/neg_empty", "shopt -s extglob\n" + `[[ "" == !(foo) ]] && echo yes || echo no`, ""},
+
+		// case with extglob
+		{"extglob/case_at", "shopt -s extglob\n" + `case hello in @(hello|world)) echo matched;; *) echo no;; esac`, ""},
+		{"extglob/case_neg", "shopt -s extglob\n" + `case foo in !(bar)) echo matched;; *) echo no;; esac`, ""},
+
+		// Parameter expansion with extglob
+		{"extglob/param_trim_prefix", "shopt -s extglob\n" + `x=foobar; echo "${x#f+(o)}"`, ""},
+		{"extglob/param_trim_suffix", "shopt -s extglob\n" + `x=foobar; echo "${x%%+(o|b)ar}"`, ""},
+		{"extglob/param_sub", "shopt -s extglob\n" + `x=foobar; echo "${x/+(o)/O}"`, ""},
+
+		// Pathname expansion with extglob
+		{"extglob/glob_at", "shopt -s extglob\n" +
+			`mkdir -p /tmp/gosh_eg; touch /tmp/gosh_eg/a.c /tmp/gosh_eg/b.h /tmp/gosh_eg/c.o; echo /tmp/gosh_eg/*.@(c|h); rm -rf /tmp/gosh_eg`, ""},
+		{"extglob/glob_neg", "shopt -s extglob\n" +
+			`mkdir -p /tmp/gosh_eg; touch /tmp/gosh_eg/a.c /tmp/gosh_eg/b.h /tmp/gosh_eg/c.o; echo /tmp/gosh_eg/*.!(o); rm -rf /tmp/gosh_eg`, ""},
+
+		// Nested extglob
+		{"extglob/nested", "shopt -s extglob\n" + `[[ ab == +(?(a)b) ]] && echo yes || echo no`, ""},
+
+		// Glob chars inside extglob
+		{"extglob/glob_inside", "shopt -s extglob\n" + `[[ foo.txt == @(*.txt|*.go) ]] && echo yes || echo no`, ""},
 	}
 }

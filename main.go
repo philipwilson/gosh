@@ -47,6 +47,10 @@ type shellState struct {
 	debugExpanded    bool                 // print AST after expansion
 	substDepth       int                  // >0 when inside command substitution
 	ed               *editor.Editor       // line editor (nil if non-interactive)
+	traps            map[string]string    // signal name → command string
+	pendingSignals   map[string]bool      // signals received, not yet handled
+	trapRunning      bool                 // prevent recursive trap execution
+	sigCh            chan os.Signal       // signal notification channel
 }
 
 func newShellState() *shellState {
@@ -74,6 +78,10 @@ func newShellState() *shellState {
 		s.vars["PS2"] = "> "
 	}
 
+	s.traps = make(map[string]string)
+	s.pendingSignals = make(map[string]bool)
+	s.sigCh = make(chan os.Signal, 8)
+
 	s.interactive = isatty(s.termFd)
 
 	if s.interactive {
@@ -94,9 +102,17 @@ func newShellState() *shellState {
 		// signal.Notify installs Go's own caught handler. After exec,
 		// POSIX resets caught handlers to SIG_DFL, so children get
 		// default signal behavior.
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTSTP)
+		signal.Notify(s.sigCh, syscall.SIGINT, syscall.SIGTSTP)
 	}
+
+	// Goroutine to receive signals and set pending flags.
+	go func() {
+		for sig := range s.sigCh {
+			if name := signalName(sig); name != "" {
+				s.pendingSignals[name] = true
+			}
+		}
+	}()
 
 	return s
 }
@@ -187,6 +203,32 @@ func parseArrayRef(s string) (name, subscript string, ok bool) {
 	name = s[:idx]
 	subscript = s[idx+1 : len(s)-1]
 	return name, subscript, true
+}
+
+// lookupArray returns array elements for "${arr[@]}" and "$@" expansion.
+// Returns (elements, true) for @ subscripts where each element should
+// become a separate word. Returns (nil, false) for * subscripts and
+// non-array variables.
+func (s *shellState) lookupArray(name string) ([]string, bool) {
+	// $@ — positional parameters as separate words.
+	if name == "@" {
+		return s.positionalParams, true
+	}
+	// ${arr[@]}
+	if arrName, subscript, ok := parseArrayRef(name); ok {
+		if subscript == "@" {
+			arr := s.arrays[arrName]
+			// Filter empty elements (sparse arrays).
+			var live []string
+			for _, v := range arr {
+				if v != "" {
+					live = append(live, v)
+				}
+			}
+			return live, true
+		}
+	}
+	return nil, false
 }
 
 func (s *shellState) environ() []string {
@@ -385,6 +427,114 @@ func (s *shellState) cmdSubst(cmd string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), nil
 }
 
+// --- Trap support ---
+
+// signalName maps an os.Signal to its canonical trap name.
+func signalName(sig os.Signal) string {
+	if s, ok := sig.(syscall.Signal); ok {
+		switch s {
+		case syscall.SIGINT:
+			return "INT"
+		case syscall.SIGTERM:
+			return "TERM"
+		case syscall.SIGHUP:
+			return "HUP"
+		case syscall.SIGQUIT:
+			return "QUIT"
+		case syscall.SIGUSR1:
+			return "USR1"
+		case syscall.SIGUSR2:
+			return "USR2"
+		}
+	}
+	return ""
+}
+
+// parseSignalSpec normalizes a signal specification (e.g. "INT", "SIGINT",
+// "int", "2") to a canonical name and syscall.Signal.
+func parseSignalSpec(spec string) (string, syscall.Signal, error) {
+	upper := strings.ToUpper(strings.TrimPrefix(strings.ToUpper(spec), "SIG"))
+
+	nameToSig := map[string]syscall.Signal{
+		"INT":  syscall.SIGINT,
+		"TERM": syscall.SIGTERM,
+		"HUP":  syscall.SIGHUP,
+		"QUIT": syscall.SIGQUIT,
+		"USR1": syscall.SIGUSR1,
+		"USR2": syscall.SIGUSR2,
+	}
+
+	if sig, ok := nameToSig[upper]; ok {
+		return upper, sig, nil
+	}
+
+	// Pseudo-signals (no syscall.Signal).
+	switch upper {
+	case "EXIT", "ERR", "RETURN":
+		return upper, 0, nil
+	}
+
+	// Try numeric.
+	if n, err := strconv.Atoi(spec); err == nil {
+		numToName := map[int]string{
+			1:  "HUP",
+			2:  "INT",
+			3:  "QUIT",
+			15: "TERM",
+			30: "USR1",
+			31: "USR2",
+		}
+		if name, ok := numToName[n]; ok {
+			return name, nameToSig[name], nil
+		}
+	}
+
+	return "", 0, fmt.Errorf("invalid signal specification: %s", spec)
+}
+
+// runPendingTraps runs any pending signal trap handlers.
+func (s *shellState) runPendingTraps() {
+	s.runPendingTrapsWithIO(os.Stdin, os.Stdout)
+}
+
+// runPendingTrapsWithIO runs pending signal traps with the given I/O.
+func (s *shellState) runPendingTrapsWithIO(stdin, stdout *os.File) {
+	if s.trapRunning {
+		return
+	}
+	for name := range s.pendingSignals {
+		delete(s.pendingSignals, name)
+		s.runTrapWithIO(name, stdin, stdout)
+	}
+}
+
+// runTrap runs a named trap handler if one is registered.
+func (s *shellState) runTrap(name string) {
+	s.runTrapWithIO(name, os.Stdin, os.Stdout)
+}
+
+// runTrapWithIO runs a named trap handler with the given I/O.
+func (s *shellState) runTrapWithIO(name string, stdin, stdout *os.File) {
+	cmd, ok := s.traps[name]
+	if !ok {
+		return
+	}
+	// Empty command = ignore the signal.
+	if cmd == "" {
+		return
+	}
+	s.trapRunning = true
+	tokens, err := lexer.Lex(cmd)
+	if err == nil {
+		tokens = expandAliases(s, tokens)
+		list, perr := parser.Parse(tokens)
+		if perr == nil {
+			execList(s, list, stdin, stdout)
+		}
+	}
+	s.trapRunning = false
+}
+
 // --- Main loop ---
 
 func main() {
@@ -397,7 +547,9 @@ func main() {
 
 	// If a script file is given as an argument, run it.
 	if len(os.Args) >= 2 {
-		os.Exit(runScript(state, os.Args[1]))
+		status := runScript(state, os.Args[1])
+		state.runTrap("EXIT")
+		os.Exit(status)
 	}
 
 	if state.interactive {
@@ -425,6 +577,7 @@ func main() {
 		runNonInteractive(state)
 	}
 
+	state.runTrap("EXIT")
 	os.Exit(state.lastStatus)
 }
 

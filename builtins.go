@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
@@ -755,6 +756,7 @@ func init() {
 	builtins["source"] = builtinSource
 	builtins["."] = builtinSource
 	builtins["eval"] = builtinEval
+	builtins["trap"] = builtinTrap
 }
 
 // builtinSource reads and executes a file in the current shell.
@@ -775,6 +777,64 @@ func builtinEval(state *shellState, args []string, stdin, stdout *os.File) int {
 	line := strings.Join(args, " ")
 	runLine(state, line)
 	return state.lastStatus
+}
+
+// builtinTrap manages signal trap handlers.
+//
+//	trap                    — list all traps
+//	trap command signal...  — set trap handler
+//	trap - signal...        — remove trap handler
+//	trap '' signal...       — ignore signal
+func builtinTrap(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		// List all traps.
+		names := make([]string, 0, len(state.traps))
+		for name := range state.traps {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(stdout, "trap -- %s %s\n", strconv.Quote(state.traps[name]), name)
+		}
+		return 0
+	}
+
+	if len(args) == 1 {
+		fmt.Fprintln(os.Stderr, "gosh: trap: usage: trap [-] command signal...")
+		return 1
+	}
+
+	command := args[0]
+	signals := args[1:]
+
+	for _, spec := range signals {
+		name, sig, err := parseSignalSpec(spec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: trap: %v\n", err)
+			return 1
+		}
+
+		if command == "-" {
+			// Remove trap.
+			delete(state.traps, name)
+			// For real signals, stop notifying (reset to default).
+			if sig != 0 {
+				signal.Reset(sig)
+				// Re-notify for signals the shell needs (INT, TSTP).
+				if sig == syscall.SIGINT || sig == syscall.SIGTSTP {
+					signal.Notify(state.sigCh, sig)
+				}
+			}
+		} else {
+			state.traps[name] = command
+			// For real signals, ensure we're notified.
+			if sig != 0 {
+				signal.Notify(state.sigCh, sig)
+			}
+		}
+	}
+
+	return 0
 }
 
 // parseJobSpec parses a job specifier like "%1" and returns the job ID.

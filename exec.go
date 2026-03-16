@@ -39,7 +39,7 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 
 		// Expand this entry just before execution.
 		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
-		expander.Expand(singleList, state.lookup, state.cmdSubst, state.setVar)
+		expander.Expand(singleList, state.lookup, state.cmdSubst, state.setVar, state.lookupArray)
 		list.Entries[i] = singleList.Entries[0]
 
 		if state.debugExpanded {
@@ -51,6 +51,13 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 		} else {
 			execPipeline(state, list.Entries[i].Pipeline, stdin, stdout)
 		}
+
+		// Run pending signal traps and ERR trap.
+		state.runPendingTrapsWithIO(stdin, stdout)
+		if state.lastStatus != 0 {
+			state.runTrapWithIO("ERR", stdin, stdout)
+		}
+
 		if state.exitFlag || state.breakFlag || state.continueFlag || state.returnFlag {
 			return
 		}
@@ -313,6 +320,10 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 	}
 	savedParams := state.positionalParams
 	savedExitFlag := state.exitFlag
+	savedTraps := make(map[string]string, len(state.traps))
+	for k, v := range state.traps {
+		savedTraps[k] = v
+	}
 
 	// Run the body.
 	body := parser.CloneList(cmd.Body)
@@ -327,6 +338,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 	state.aliases = savedAliases
 	state.positionalParams = savedParams
 	state.exitFlag = savedExitFlag
+	state.traps = savedTraps
 	state.lastStatus = status
 
 	return status
@@ -425,7 +437,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int 
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookup, state.cmdSubst, state.setVar)
+	}, state.lookup, state.cmdSubst, state.setVar, state.lookupArray)
 
 	// Collect the expanded arg strings.
 	values := tmpCmd.ArgStrings()
@@ -527,7 +539,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) in
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookup, state.cmdSubst, state.setVar)
+	}, state.lookup, state.cmdSubst, state.setVar, state.lookupArray)
 	subject := tmpCmd.ArgStrings()[0]
 
 	for _, clause := range cmd.Clauses {
@@ -662,6 +674,9 @@ func execFunction(state *shellState, body *parser.List, args []string, stdin, st
 
 	cloned := parser.CloneList(body)
 	execList(state, cloned, stdin, stdout)
+
+	// Fire RETURN trap before restoring state.
+	state.runTrapWithIO("RETURN", stdin, stdout)
 
 	// Pop and restore local variables.
 	scope := state.localScopes[len(state.localScopes)-1]

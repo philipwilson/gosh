@@ -47,19 +47,25 @@ type LookupFunc func(name string) string
 // command substitution is not needed (e.g., in tests).
 type SubstFunc func(cmd string) (string, error)
 
+// LookupArrayFunc returns the elements of an array variable for "@"
+// subscripts. Returns (elements, true) when the variable is an array
+// with "@" subscript (each element becomes a separate word in double
+// quotes). Returns (nil, false) for "*" subscripts and non-array vars.
+type LookupArrayFunc func(name string) ([]string, bool)
+
 // Expand walks the AST and performs all expansion phases.
-// It modifies the AST in place.
-func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
+// It modifies the AST in place. lookupArray may be nil.
+func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
 	for i := range list.Entries {
-		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar)
+		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar, lookupArray)
 	}
 }
 
-func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
+func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
 	for _, cmd := range pipe.Cmds {
 		switch c := cmd.(type) {
 		case *parser.SimpleCmd:
-			expandCommand(c, lookup, subst, setVar)
+			expandCommand(c, lookup, subst, setVar, lookupArray)
 		case *parser.IfCmd:
 			// IfCmd branches are expanded lazily by the executor,
 			// so each branch is only expanded if it's actually taken.
@@ -86,7 +92,7 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, s
 	}
 }
 
-func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
+func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
 	// Phase 1: tilde expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandTilde(cmd.Assigns[i].Value, lookup)
@@ -138,9 +144,12 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 			cmd.Assigns[i].Array[j] = expandVarsInWord(cmd.Assigns[i].Array[j], lookup)
 		}
 	}
-	for i := range cmd.Args {
-		cmd.Args[i] = expandVarsInWord(cmd.Args[i], lookup)
+	// For args, "${arr[@]}" and "$@" in double quotes may produce multiple words.
+	var newArgs []lexer.Word
+	for _, arg := range cmd.Args {
+		newArgs = append(newArgs, expandVarsInWordMulti(arg, lookup, lookupArray)...)
 	}
+	cmd.Args = newArgs
 	for i := range cmd.Redirects {
 		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup)
 	}
@@ -297,6 +306,253 @@ func expandVarsInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 	}
 
 	return result
+}
+
+// expandVarsInWordMulti is like expandVarsInWord but can return multiple
+// words when a DoubleQuoted part contains "${arr[@]}" or "$@". Each array
+// element becomes a separate word, with surrounding text attached to the
+// first and last elements.
+func expandVarsInWordMulti(w lexer.Word, lookup LookupFunc, lookupArray LookupArrayFunc) []lexer.Word {
+	if lookupArray == nil {
+		return []lexer.Word{expandVarsInWord(w, lookup)}
+	}
+
+	// Check if any DoubleQuoted part contains an array-@ expansion.
+	hasArrayAt := false
+	for _, part := range w {
+		if part.Quote == lexer.DoubleQuoted && containsArrayAt(part.Text) {
+			hasArrayAt = true
+			break
+		}
+	}
+	if !hasArrayAt {
+		return []lexer.Word{expandVarsInWord(w, lookup)}
+	}
+
+	// Process parts, splitting on array-@ expansions in DoubleQuoted context.
+	// We build words by accumulating parts until we hit a "${arr[@]}" or "$@",
+	// then split into multiple words.
+	var result []lexer.Word
+	var cur lexer.Word
+
+	for _, part := range w {
+		if part.Quote == lexer.SingleQuoted {
+			cur = append(cur, part)
+			continue
+		}
+		if part.Quote == lexer.Unquoted {
+			cur = append(cur, expandDollarParts(part.Text, lookup)...)
+			continue
+		}
+		if part.Quote != lexer.DoubleQuoted || !containsArrayAt(part.Text) {
+			expanded := expandDollar(part.Text, lookup)
+			cur = append(cur, lexer.WordPart{Text: expanded, Quote: part.Quote})
+			continue
+		}
+
+		// DoubleQuoted part with ${arr[@]} or $@ — split into elements.
+		elements := expandDollarMulti(part.Text, lookup, lookupArray)
+		if len(elements) == 0 {
+			// Empty array — the word should be removed entirely
+			// (unless there are other non-empty parts).
+			continue
+		}
+
+		// First element attaches to accumulated prefix.
+		cur = append(cur, lexer.WordPart{Text: elements[0], Quote: lexer.DoubleQuoted})
+
+		if len(elements) == 1 {
+			continue
+		}
+
+		// Emit prefix + first element as a word.
+		result = append(result, cur)
+
+		// Middle elements each become their own word.
+		for _, elem := range elements[1 : len(elements)-1] {
+			result = append(result, lexer.Word{{Text: elem, Quote: lexer.DoubleQuoted}})
+		}
+
+		// Last element starts a new accumulator for suffix.
+		cur = lexer.Word{{Text: elements[len(elements)-1], Quote: lexer.DoubleQuoted}}
+	}
+
+	if len(cur) > 0 {
+		result = append(result, cur)
+	}
+
+	// If result is empty (empty array with no other text), return nothing.
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+// containsArrayAt returns true if text contains $@ or ${...[@]}.
+func containsArrayAt(text string) bool {
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] != '$' {
+			continue
+		}
+		i++
+		if i >= len(runes) {
+			break
+		}
+		if runes[i] == '@' {
+			return true
+		}
+		if runes[i] == '{' {
+			// Look for [@] before }.
+			j := i + 1
+			for j < len(runes) && runes[j] != '}' {
+				j++
+			}
+			if j < len(runes) {
+				content := string(runes[i+1 : j])
+				if strings.HasSuffix(content, "[@]") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// expandDollarMulti expands a DoubleQuoted text that may contain $@ or
+// ${arr[@]}, returning separate elements for array-@ expansions. Non-array
+// parts are concatenated into adjacent elements.
+func expandDollarMulti(text string, lookup LookupFunc, lookupArray LookupArrayFunc) []string {
+	runes := []rune(text)
+	var elements []string
+	var buf strings.Builder
+	hadEmptyArray := false
+	i := 0
+
+	for i < len(runes) {
+		if runes[i] != '$' {
+			buf.WriteRune(runes[i])
+			i++
+			continue
+		}
+
+		i++ // skip $
+		if i >= len(runes) {
+			buf.WriteRune('$')
+			break
+		}
+
+		// Check for $@ (positional params array).
+		if runes[i] == '@' {
+			i++
+			elems, ok := lookupArray("@")
+			if ok && len(elems) == 0 {
+				hadEmptyArray = true
+				continue
+			}
+			if ok && len(elems) > 0 {
+				// First element merges with prefix.
+				buf.WriteString(elems[0])
+				elements = appendBuf(&buf, elements)
+				// Middle elements.
+				for _, e := range elems[1 : len(elems)-1] {
+					elements = append(elements, e)
+				}
+				// Last element starts next buffer.
+				if len(elems) > 1 {
+					buf.WriteString(elems[len(elems)-1])
+				}
+			} else if !ok {
+				buf.WriteString(lookup("@"))
+			}
+			continue
+		}
+
+		// Check for ${...[@]}.
+		if runes[i] == '{' {
+			start := i + 1
+			j := start
+			for j < len(runes) && runes[j] != '}' {
+				j++
+			}
+			if j < len(runes) {
+				content := string(runes[start:j])
+				i = j + 1
+
+				// Check for array[@] pattern.
+				if idx := strings.Index(content, "[@]"); idx >= 0 && idx+3 == len(content) {
+					arrName := content[:idx]
+					elems, ok := lookupArray(arrName + "[@]")
+					if ok && len(elems) > 0 {
+						buf.WriteString(elems[0])
+						elements = appendBuf(&buf, elements)
+						for _, e := range elems[1 : len(elems)-1] {
+							elements = append(elements, e)
+						}
+						if len(elems) > 1 {
+							buf.WriteString(elems[len(elems)-1])
+						}
+					} else if !ok {
+						buf.WriteString(expandParam(content, lookup))
+					} else {
+						// ok && len(elems)==0: empty array
+						hadEmptyArray = true
+					}
+					continue
+				}
+
+				buf.WriteString(expandParam(content, lookup))
+				continue
+			}
+			// Unclosed brace.
+			buf.WriteString("${")
+			buf.WriteString(string(runes[start:]))
+			break
+		}
+
+		// Regular $VAR expansion.
+		switch {
+		case runes[i] == '?':
+			buf.WriteString(lookup("?"))
+			i++
+		case runes[i] == '$':
+			buf.WriteString(lookup("$"))
+			i++
+		case runes[i] == '#':
+			buf.WriteString(lookup("#"))
+			i++
+		case runes[i] == '*':
+			buf.WriteString(lookup("*"))
+			i++
+		case runes[i] >= '0' && runes[i] <= '9':
+			buf.WriteString(lookup(string(runes[i])))
+			i++
+		case isNameStart(runes[i]):
+			start := i
+			for i < len(runes) && isNameCont(runes[i]) {
+				i++
+			}
+			buf.WriteString(lookup(string(runes[start:i])))
+		default:
+			buf.WriteRune('$')
+		}
+	}
+
+	// Flush remaining buffer.
+	if buf.Len() > 0 {
+		elements = append(elements, buf.String())
+	} else if len(elements) == 0 && !hadEmptyArray {
+		elements = append(elements, "")
+	}
+	return elements
+}
+
+// appendBuf flushes a string builder as an element and returns the updated slice.
+func appendBuf(buf *strings.Builder, elements []string) []string {
+	elements = append(elements, buf.String())
+	buf.Reset()
+	return elements
 }
 
 // --- Word splitting (IFS field splitting) ---
@@ -730,6 +986,14 @@ func expandParam(content string, lookup LookupFunc) string {
 		return removeSuffix(value, word, false)
 	case "%%":
 		return removeSuffix(value, word, true)
+	case "/":
+		pat, rep := splitSlashPattern(word)
+		return substitutePattern(value, pat, rep, false)
+	case "//":
+		pat, rep := splitSlashPattern(word)
+		return substitutePattern(value, pat, rep, true)
+	case ":":
+		return substringExtract(value, word)
 	}
 
 	return value
@@ -779,15 +1043,20 @@ func parseParamOp(content string) (name, op, word string) {
 	rest := string(runes[i:])
 
 	// Check for two-character operators first, then single-character.
-	for _, candidate := range []string{"%%", "##", ":-", ":+", ":=", ":?"} {
+	for _, candidate := range []string{"%%", "##", "//", ":-", ":+", ":=", ":?"} {
 		if strings.HasPrefix(rest, candidate) {
 			return name, candidate, rest[len(candidate):]
 		}
 	}
-	for _, candidate := range []string{"%", "#", "-", "+", "=", "?"} {
+	for _, candidate := range []string{"%", "#", "/", "-", "+", "=", "?"} {
 		if strings.HasPrefix(rest, candidate) {
 			return name, candidate, rest[len(candidate):]
 		}
+	}
+
+	// Substring extraction: ${var:offset} or ${var:offset:length}
+	if strings.HasPrefix(rest, ":") {
+		return name, ":", rest[1:]
 	}
 
 	// No operator — could be a simple name or unrecognized content.
@@ -900,6 +1169,109 @@ func removeSuffix(value, pattern string, longest bool) string {
 		}
 	}
 	return value
+}
+
+// splitSlashPattern splits word on the first unescaped "/" into
+// pattern and replacement. If there is no "/", replacement is "".
+func splitSlashPattern(word string) (pat, rep string) {
+	runes := []rune(word)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\\' && i+1 < len(runes) {
+			i++ // skip escaped char
+			continue
+		}
+		if runes[i] == '/' {
+			return string(runes[:i]), string(runes[i+1:])
+		}
+	}
+	return word, ""
+}
+
+// substitutePattern replaces the first (or all) occurrences of a glob
+// pattern in value with replacement. Matches are found by testing
+// substrings at each position for the shortest match.
+func substitutePattern(value, pattern, replacement string, all bool) string {
+	if pattern == "" {
+		return value
+	}
+	runes := []rune(value)
+	var result strings.Builder
+	i := 0
+	for i < len(runes) {
+		// Try longest match first (bash behavior).
+		matchEnd := -1
+		for end := len(runes); end > i; end-- {
+			if patternMatch(pattern, string(runes[i:end])) {
+				matchEnd = end
+				break
+			}
+		}
+		if matchEnd >= 0 {
+			result.WriteString(replacement)
+			i = matchEnd
+			if !all {
+				result.WriteString(string(runes[i:]))
+				return result.String()
+			}
+		} else {
+			result.WriteRune(runes[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// substringExtract implements ${var:offset} and ${var:offset:length}.
+// Supports negative offset (from end, requires leading space in shell)
+// and negative length (stop before end).
+func substringExtract(value, spec string) string {
+	runes := []rune(value)
+	n := len(runes)
+
+	// Split spec on ":" to get offset and optional length.
+	parts := strings.SplitN(spec, ":", 2)
+	offsetStr := strings.TrimSpace(parts[0])
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		return value
+	}
+
+	// Negative offset counts from end.
+	if offset < 0 {
+		offset = n + offset
+		if offset < 0 {
+			offset = 0
+		}
+	}
+	if offset > n {
+		return ""
+	}
+
+	if len(parts) == 1 {
+		return string(runes[offset:])
+	}
+
+	lengthStr := strings.TrimSpace(parts[1])
+	length, err := strconv.Atoi(lengthStr)
+	if err != nil {
+		return value
+	}
+
+	if length < 0 {
+		// Negative length means stop before end.
+		end := n + length
+		if end <= offset {
+			return ""
+		}
+		return string(runes[offset:end])
+	}
+
+	end := offset + length
+	if end > n {
+		end = n
+	}
+	return string(runes[offset:end])
 }
 
 // patternMatch is like filepath.Match but allows * to match /

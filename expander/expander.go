@@ -101,6 +101,8 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, s
 			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.SubshellCmd:
 			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
+		case *parser.BraceGroupCmd:
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.ArithCmd:
 			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		default:

@@ -13,6 +13,14 @@ import (
 	"gosh/parser"
 )
 
+// execBraceGroup runs commands in the current shell scope.
+// Unlike subshells, variable changes persist in the caller.
+func execBraceGroup(state *shellState, cmd *parser.BraceGroupCmd, stdin, stdout, stderr *os.File) int {
+	body := parser.CloneList(cmd.Body)
+	execList(state, body, stdin, stdout, stderr)
+	return state.lastStatus
+}
+
 // execSubshell runs commands in an isolated variable scope.
 // Variable changes inside the subshell do not affect the parent.
 func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, stderr *os.File) int {

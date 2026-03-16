@@ -438,6 +438,10 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout, stderr *o
 		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
 			return execSubshell(state, c, in, out, serr)
 		})
+	case *parser.BraceGroupCmd:
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execBraceGroup(state, c, in, out, serr)
+		})
 	case *parser.ArithCmd:
 		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
 			return execArithCmd(state, c, serr)

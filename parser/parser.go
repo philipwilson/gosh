@@ -183,6 +183,8 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseSelect()
 		case "[[":
 			return p.parseDblBracket()
+		case "{":
+			return p.parseBraceGroup()
 		default:
 			// Check for function definition: WORD ( ) { ... }
 			// Only if the word is a valid identifier (not an assignment
@@ -268,6 +270,23 @@ func (p *parser) parseSubshell() (*SubshellCmd, error) {
 		return nil, err
 	}
 	return &SubshellCmd{Body: body, Redirects: redirs}, nil
+}
+
+// parseBraceGroup parses: '{' list '}'
+func (p *parser) parseBraceGroup() (*BraceGroupCmd, error) {
+	p.next() // consume {
+	body, err := p.parseList("}")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("}") {
+		return nil, fmt.Errorf("expected '}', got %s", p.peek())
+	}
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &BraceGroupCmd{Body: body, Redirects: redirs}, nil
 }
 
 // parseIf parses: 'if' list 'then' list ('elif' list 'then' list)* ('else' list)? 'fi'

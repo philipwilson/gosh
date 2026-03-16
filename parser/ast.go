@@ -305,6 +305,8 @@ func cloneCommand(c Command) Command {
 		return &DblBracketCmd{Items: items, Redirects: cloneRedirects(c.Redirects)}
 	case *SubshellCmd:
 		return &SubshellCmd{Body: CloneList(c.Body), Redirects: cloneRedirects(c.Redirects)}
+	case *BraceGroupCmd:
+		return &BraceGroupCmd{Body: CloneList(c.Body), Redirects: cloneRedirects(c.Redirects)}
 	case *ArithCmd:
 		return &ArithCmd{Expr: c.Expr, Redirects: cloneRedirects(c.Redirects)}
 	default:
@@ -537,6 +539,21 @@ func (c *SubshellCmd) node()    {}
 func (c *SubshellCmd) command() {}
 func (c *SubshellCmd) String() string {
 	return "Subshell[" + c.Body.String() + "]"
+}
+
+// --- BraceGroupCmd ---
+
+// BraceGroupCmd represents: { list; } — groups commands in the current shell.
+// Unlike subshells, variable changes persist in the caller.
+type BraceGroupCmd struct {
+	Body      *List
+	Redirects []Redirect
+}
+
+func (c *BraceGroupCmd) node()    {}
+func (c *BraceGroupCmd) command() {}
+func (c *BraceGroupCmd) String() string {
+	return "BraceGroup[" + c.Body.String() + "]"
 }
 
 // --- ArithCmd ---

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,8 +89,11 @@ func builtinCd(state *shellState, args []string, stdin, stdout, stderr *os.File)
 		return 1
 	}
 
-	// Save current directory as OLDPWD before changing.
-	oldwd, _ := os.Getwd()
+	// Save current logical directory as OLDPWD before changing.
+	oldwd := state.vars["PWD"]
+	if oldwd == "" {
+		oldwd, _ = os.Getwd()
+	}
 
 	if err := os.Chdir(dir); err != nil {
 		fmt.Fprintf(stderr, "gosh: cd: %s: %v\n", dir, err)
@@ -98,22 +102,33 @@ func builtinCd(state *shellState, args []string, stdin, stdout, stderr *os.File)
 
 	state.setVar("OLDPWD", oldwd)
 
-	// Update PWD and print new directory if cd - was used.
-	if wd, err := os.Getwd(); err == nil {
-		state.setVar("PWD", wd)
-		if len(args) > 0 && args[0] == "-" {
-			fmt.Fprintln(stdout, wd)
-		}
+	// Compute logical PWD: if dir is absolute, use it cleaned;
+	// if relative, join with the old logical PWD.
+	var newPwd string
+	if filepath.IsAbs(dir) {
+		newPwd = filepath.Clean(dir)
+	} else {
+		newPwd = filepath.Clean(filepath.Join(oldwd, dir))
+	}
+	state.setVar("PWD", newPwd)
+
+	if len(args) > 0 && args[0] == "-" {
+		fmt.Fprintln(stdout, newPwd)
 	}
 	return 0
 }
 
 // builtinPwd prints the current working directory.
+// Uses the logical path (PWD) by default, matching bash behavior.
 func builtinPwd(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
-	wd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(stderr, "gosh: pwd: %v\n", err)
-		return 1
+	wd := state.vars["PWD"]
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "gosh: pwd: %v\n", err)
+			return 1
+		}
 	}
 	fmt.Fprintln(stdout, wd)
 	return 0

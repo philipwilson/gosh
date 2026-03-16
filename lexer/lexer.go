@@ -527,6 +527,25 @@ func (l *lexer) readWord() (Word, error) {
 			}
 			parts = append(parts, part)
 
+		case ch == '$' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '{':
+			// ${...} — braced parameter expansion. Read until matching }.
+			l.next() // consume $
+			l.next() // consume {
+			buf = append(buf, '$', '{')
+			depth := 1
+			for depth > 0 {
+				c, ok := l.next()
+				if !ok {
+					return nil, fmt.Errorf("unterminated ${")
+				}
+				buf = append(buf, c)
+				if c == '{' {
+					depth++
+				} else if c == '}' {
+					depth--
+				}
+			}
+
 		case ch == '$' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '(':
 			flushUnquoted()
 			if l.pos+2 < len(l.input) && l.input[l.pos+2] == '(' {

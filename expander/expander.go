@@ -55,6 +55,7 @@ func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFun
 	if len(isAssoc) > 0 {
 		assocFn = isAssoc[0]
 	}
+	activeSetVar = setVar
 	for i := range list.Entries {
 		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar, lookupArray, isSet, assocFn)
 	}

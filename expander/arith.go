@@ -63,11 +63,24 @@ func tokenizeArith(expr string) ([]arithToken, error) {
 			continue
 		}
 
-		// Number.
+		// Number (decimal, hex 0x..., octal 0...).
 		if ch >= '0' && ch <= '9' {
 			start := i
-			for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
-				i++
+			if ch == '0' && i+1 < len(runes) && (runes[i+1] == 'x' || runes[i+1] == 'X') {
+				// Hex literal: 0x...
+				i += 2
+				for i < len(runes) && isHexDigit(runes[i]) {
+					i++
+				}
+			} else if ch == '0' && i+1 < len(runes) && runes[i+1] >= '0' && runes[i+1] <= '7' {
+				// Octal literal: 0...
+				for i < len(runes) && runes[i] >= '0' && runes[i] <= '7' {
+					i++
+				}
+			} else {
+				for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+					i++
+				}
 			}
 			tokens = append(tokens, arithToken{aTokNum, string(runes[start:i])})
 			continue
@@ -168,6 +181,10 @@ func tokenizeArith(expr string) ([]arithToken, error) {
 	}
 
 	return tokens, nil
+}
+
+func isHexDigit(ch rune) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 func isArithNameStart(ch rune) bool {
@@ -616,7 +633,7 @@ func (p *arithParser) parsePrimary() (int64, error) {
 	switch tok.typ {
 	case aTokNum:
 		p.next()
-		n, err := strconv.ParseInt(tok.val, 10, 64)
+		n, err := strconv.ParseInt(tok.val, 0, 64)
 		if err != nil {
 			return 0, fmt.Errorf("invalid number: %s", tok.val)
 		}

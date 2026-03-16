@@ -9,6 +9,10 @@ import (
 	"unicode"
 )
 
+// activeSetVar holds the current SetFunc during Expand, used by expandParam
+// for ${var:=word} assignment. Set by Expand, cleared on return.
+var activeSetVar SetFunc
+
 // expandVarsInWord expands $VAR references in a word, respecting quoting.
 // For Unquoted parts, expansion results are marked Expanded (subject to
 // word splitting). For DoubleQuoted parts, results keep DoubleQuoted context.
@@ -532,11 +536,17 @@ func expandParam(content string, lookup LookupFunc, isSet IsSetFunc, isAssoc ...
 			return ""
 		case ":=":
 			if !varSet || value == "" {
+				if activeSetVar != nil {
+					activeSetVar(name, word)
+				}
 				return word
 			}
 			return value
 		case "=":
 			if !varSet {
+				if activeSetVar != nil {
+					activeSetVar(name, word)
+				}
 				return word
 			}
 			return value

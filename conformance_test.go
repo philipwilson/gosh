@@ -186,7 +186,7 @@ func parameterExpansionCases() []conformanceCase {
 		{"param/alt_unset", `echo ${x:+alt}`, ""},
 		{"param/alt_empty", `x=; echo ${x:+alt}`, ""},
 		{"param/alt_no_colon_empty", `x=; echo ${x+alt}`, ""},
-		{"param/assign_default", `echo ${x:=hello}; echo $x`, "gosh bug: ${x:=word} assigns but second echo doesn't see the value"},
+		{"param/assign_default", `echo ${x:=hello}; echo $x`, ""},
 		{"param/error_unset", `echo ${x:?oops} 2>/dev/null; echo $?`, "gosh bug: ${x:?msg} should abort the shell with exit 1, not continue"},
 
 		// Trimming
@@ -203,8 +203,8 @@ func parameterExpansionCases() []conformanceCase {
 		// Substring
 		{"param/substring_offset", `x=hello; echo ${x:1}`, ""},
 		{"param/substring_offset_length", `x=hello; echo ${x:1:3}`, ""},
-		{"param/substring_negative_offset", `x=hello; echo ${x: -2}`, "gosh bug: unquoted ${x: -2} not parsed correctly (space before minus)"},
-		{"param/substring_neg_offset_len", `x=hello; echo ${x: -3:2}`, "gosh bug: unquoted ${x: -3:2} not parsed correctly"},
+		{"param/substring_negative_offset", `x=hello; echo ${x: -2}`, ""},
+		{"param/substring_neg_offset_len", `x=hello; echo ${x: -3:2}`, ""},
 
 		// Case conversion
 		{"param/case_upper_first", `x=hello; echo ${x^}`, ""},
@@ -229,9 +229,9 @@ func arithmeticCases() []conformanceCase {
 		{"arith/ternary", `echo $((1 ? 42 : 0))`, ""},
 		{"arith/logical_and", `echo $((1 && 0))`, ""},
 		{"arith/logical_or", `echo $((0 || 1))`, ""},
-		{"arith/bitwise_and", `echo $((0xFF & 0x0F))`, "gosh bug: hex literals (0x...) not supported in arithmetic"},
-		{"arith/bitwise_or", `echo $((0xF0 | 0x0F))`, "gosh bug: hex literals (0x...) not supported in arithmetic"},
-		{"arith/bitwise_xor", `echo $((0xFF ^ 0x0F))`, "gosh bug: hex literals (0x...) not supported in arithmetic"},
+		{"arith/bitwise_and", `echo $((0xFF & 0x0F))`, ""},
+		{"arith/bitwise_or", `echo $((0xF0 | 0x0F))`, ""},
+		{"arith/bitwise_xor", `echo $((0xFF ^ 0x0F))`, ""},
 		{"arith/shift_left", `echo $((1 << 8))`, ""},
 		{"arith/shift_right", `echo $((256 >> 4))`, ""},
 		{"arith/negate", `echo $((-5))`, ""},
@@ -385,8 +385,8 @@ func builtinCases() []conformanceCase {
 		{"builtin/printf_percent", `printf '100%%\n'`, ""},
 
 		// cd / pwd
-		{"builtin/cd_pwd", `cd /tmp; pwd`, "gosh bug: cd resolves symlinks (physical) instead of using logical path like bash"},
-		{"builtin/cd_dash", `cd /tmp; cd /; cd -; pwd`, "gosh bug: cd resolves symlinks (physical) instead of using logical path"},
+		{"builtin/cd_pwd", `cd /tmp; pwd`, ""},
+		{"builtin/cd_dash", `cd /tmp; cd /; cd -; pwd`, ""},
 
 		// true / false
 		{"builtin/true", `true; echo $?`, ""},
@@ -609,11 +609,11 @@ func subshellCases() []conformanceCase {
 
 func heredocCases() []conformanceCase {
 	return []conformanceCase{
-		{"heredoc/basic", fmt.Sprintf("cat <<EOF\nhello world\nEOF"), "gosh bug: -c mode doesn't resolve heredocs across lines"},
-		{"heredoc/var_expand", fmt.Sprintf("x=hello; cat <<EOF\n$x world\nEOF"), "gosh bug: -c mode doesn't resolve heredocs across lines"},
-		{"heredoc/quoted_no_expand", fmt.Sprintf("x=hello; cat <<'EOF'\n$x world\nEOF"), "gosh bug: -c mode doesn't resolve heredocs across lines"},
-		{"heredoc/strip_tabs", fmt.Sprintf("cat <<-EOF\n\thello\n\tworld\nEOF"), "gosh bug: -c mode doesn't resolve heredocs across lines"},
-		{"heredoc/multiline", fmt.Sprintf("cat <<EOF\nline 1\nline 2\nline 3\nEOF"), "gosh bug: -c mode doesn't resolve heredocs across lines"},
+		{"heredoc/basic", fmt.Sprintf("cat <<EOF\nhello world\nEOF"), ""},
+		{"heredoc/var_expand", fmt.Sprintf("x=hello; cat <<EOF\n$x world\nEOF"), ""},
+		{"heredoc/quoted_no_expand", fmt.Sprintf("x=hello; cat <<'EOF'\n$x world\nEOF"), ""},
+		{"heredoc/strip_tabs", fmt.Sprintf("cat <<-EOF\n\thello\n\tworld\nEOF"), ""},
+		{"heredoc/multiline", fmt.Sprintf("cat <<EOF\nline 1\nline 2\nline 3\nEOF"), ""},
 	}
 }
 

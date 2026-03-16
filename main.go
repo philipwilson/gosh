@@ -56,7 +56,7 @@ doneFlags:
 			state.vars["0"] = args[2]
 			state.positionalParams = args[3:]
 		}
-		runLine(state, cmdStr)
+		runStringWithIO(state, cmdStr, os.Stdin, os.Stdout, os.Stderr)
 		state.runTrap("EXIT")
 		os.Exit(state.lastStatus)
 	}
@@ -188,6 +188,59 @@ func runLineWithIO(state *shellState, line string, stdin, stdout, stderr *os.Fil
 		return false
 	}
 	return runTokensWithIO(state, tokens, stdin, stdout, stderr)
+}
+
+// runStringWithIO runs a (possibly multi-line) command string, handling
+// heredocs by feeding continuation lines from the string itself.
+func runStringWithIO(state *shellState, input string, stdin, stdout, stderr *os.File) {
+	scanner := bufio.NewScanner(strings.NewReader(input))
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for {
+		if !scanner.Scan() {
+			break
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		// Collect continuation lines for incomplete input.
+		for needsMore(line) {
+			if !scanner.Scan() {
+				break
+			}
+			more := scanner.Text()
+			if strings.HasSuffix(line, "\\") {
+				line = line[:len(line)-1] + more
+			} else {
+				line = line + "\n" + more
+			}
+		}
+
+		tokens, err := lexer.Lex(line)
+		if err != nil {
+			fmt.Fprintf(stderr, "gosh: %v\n", err)
+			continue
+		}
+
+		if lexer.HasHeredocs(tokens) {
+			hdErr := lexer.ResolveHeredocs(tokens, func() (string, bool) {
+				if !scanner.Scan() {
+					return "", false
+				}
+				return scanner.Text(), true
+			})
+			if hdErr != nil {
+				fmt.Fprintf(stderr, "gosh: %v\n", hdErr)
+				continue
+			}
+		}
+
+		if runTokensWithIO(state, tokens, stdin, stdout, stderr) {
+			break
+		}
+	}
 }
 
 // runTokens parses and executes a pre-lexed token stream.

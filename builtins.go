@@ -1663,21 +1663,7 @@ func builtinFg(state *shellState, args []string, stdin, stdout, stderr *os.File)
 	j.state = jobRunning
 
 	// Wait for the job (may stop again).
-	var lastResult waitResult
-	for _, pid := range j.pids {
-		var ws syscall.WaitStatus
-		_, err := syscall.Wait4(pid, &ws, syscall.WUNTRACED, nil)
-		if err != nil {
-			continue
-		}
-		if ws.Stopped() {
-			lastResult = waitResult{status: 128 + int(ws.StopSignal()), stopped: true}
-		} else if ws.Signaled() {
-			lastResult = waitResult{status: 128 + int(ws.Signal())}
-		} else {
-			lastResult = waitResult{status: ws.ExitStatus()}
-		}
-	}
+	lastResult := j.waitPids(syscall.WUNTRACED)
 
 	if state.interactive {
 		tcsetpgrp(state.termFd, state.shellPgid)
@@ -1802,21 +1788,15 @@ func builtinWait(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 // waitJob waits for all processes in a job to finish and removes the job.
 // Returns the exit status of the last process.
 func waitJob(state *shellState, j *job) int {
-	lastStatus := 0
+	var res waitResult
 	if j.state != jobDone {
-		for _, pid := range j.pids {
-			var ws syscall.WaitStatus
-			_, err := syscall.Wait4(pid, &ws, 0, nil)
-			if err != nil {
-				continue
-			}
-			if ws.Signaled() {
-				lastStatus = 128 + int(ws.Signal())
-			} else {
-				lastStatus = ws.ExitStatus()
-			}
+		res = j.waitPids(0)
+	} else {
+		// Already done — use stored status of last PID.
+		if n := len(j.statuses); n > 0 {
+			res.status = j.statuses[n-1]
 		}
 	}
 	state.removeJob(j.id)
-	return lastStatus
+	return res.status
 }

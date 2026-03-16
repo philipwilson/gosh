@@ -28,21 +28,64 @@ func (s jobState) String() string {
 }
 
 type job struct {
-	id    int      // job number [1], [2], ...
-	pgid  int      // process group ID
-	pids  []int    // all PIDs in the pipeline
-	cmd   string   // original command text for display
-	state jobState
+	id       int      // job number [1], [2], ...
+	pgid     int      // process group ID
+	pids     []int    // all PIDs in the pipeline
+	reaped   []bool   // per-PID: true if waited on and exited
+	statuses []int    // per-PID exit status (valid when reaped[i] is true)
+	cmd      string   // original command text for display
+	state    jobState
+}
+
+// allReaped returns true if every PID in the job has exited.
+func (j *job) allReaped() bool {
+	for _, r := range j.reaped {
+		if !r {
+			return false
+		}
+	}
+	return true
+}
+
+// waitPids waits for un-reaped PIDs. flags is passed to Wait4
+// (e.g., 0 for blocking, WUNTRACED to detect re-stops in fg).
+// Returns the result based on the last PID in the pipeline.
+func (j *job) waitPids(flags int) waitResult {
+	var last waitResult
+	for i, pid := range j.pids {
+		if j.reaped[i] {
+			last = waitResult{status: j.statuses[i]}
+			continue
+		}
+		var ws syscall.WaitStatus
+		_, err := syscall.Wait4(pid, &ws, flags, nil)
+		if err != nil {
+			continue
+		}
+		if ws.Stopped() {
+			return waitResult{status: 128 + int(ws.StopSignal()), stopped: true}
+		}
+		j.reaped[i] = true
+		if ws.Signaled() {
+			j.statuses[i] = 128 + int(ws.Signal())
+		} else {
+			j.statuses[i] = ws.ExitStatus()
+		}
+		last = waitResult{status: j.statuses[i]}
+	}
+	return last
 }
 
 func (s *shellState) addJob(pgid int, pids []int, cmd string, state jobState) *job {
 	s.nextJobID++
 	j := &job{
-		id:    s.nextJobID,
-		pgid:  pgid,
-		pids:  pids,
-		cmd:   cmd,
-		state: state,
+		id:       s.nextJobID,
+		pgid:     pgid,
+		pids:     pids,
+		reaped:   make([]bool, len(pids)),
+		statuses: make([]int, len(pids)),
+		cmd:      cmd,
+		state:    state,
 	}
 	s.jobs = append(s.jobs, j)
 	return j
@@ -98,15 +141,24 @@ func (s *shellState) reapJobs() {
 			if j.state == jobDone {
 				continue
 			}
-			for _, p := range j.pids {
-				if p == pid {
-					if ws.Stopped() {
-						j.state = jobStopped
+			for idx, p := range j.pids {
+				if p != pid {
+					continue
+				}
+				if ws.Stopped() {
+					j.state = jobStopped
+				} else {
+					j.reaped[idx] = true
+					if ws.Signaled() {
+						j.statuses[idx] = 128 + int(ws.Signal())
 					} else {
+						j.statuses[idx] = ws.ExitStatus()
+					}
+					if j.allReaped() {
 						j.state = jobDone
 					}
-					break
 				}
+				break
 			}
 		}
 	}

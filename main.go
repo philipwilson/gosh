@@ -14,9 +14,15 @@ import (
 )
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Printf("gosh %s\n", version)
-		return
+	if len(os.Args) == 2 {
+		switch os.Args[1] {
+		case "--version":
+			printVersion(os.Stdout)
+			return
+		case "-h", "--help":
+			printUsage(os.Stdout)
+			return
+		}
 	}
 
 	state := newShellState()

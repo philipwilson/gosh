@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -49,6 +50,7 @@ type shellState struct {
 	ed               *editor.Editor       // line editor (nil if non-interactive)
 	traps            map[string]string    // signal name → command string
 	pendingSignals   map[string]bool      // signals received, not yet handled
+	pendingMu        sync.Mutex           // guards pendingSignals
 	trapRunning      bool                 // prevent recursive trap execution
 	sigCh            chan os.Signal       // signal notification channel
 	optErrexit       bool                 // set -e: exit on error
@@ -115,7 +117,9 @@ func newShellState() *shellState {
 	go func() {
 		for sig := range s.sigCh {
 			if name := signalName(sig); name != "" {
+				s.pendingMu.Lock()
 				s.pendingSignals[name] = true
+				s.pendingMu.Unlock()
 			}
 		}
 	}()
@@ -515,8 +519,16 @@ func (s *shellState) runPendingTrapsWithIO(stdin, stdout *os.File) {
 	if s.trapRunning {
 		return
 	}
+	// Drain pending signals under the lock, then run handlers outside it.
+	s.pendingMu.Lock()
+	var pending []string
 	for name := range s.pendingSignals {
+		pending = append(pending, name)
 		delete(s.pendingSignals, name)
+	}
+	s.pendingMu.Unlock()
+
+	for _, name := range pending {
 		s.runTrapWithIO(name, stdin, stdout)
 	}
 }

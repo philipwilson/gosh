@@ -54,6 +54,7 @@ var builtins = map[string]builtinFunc{
 	"wait":            builtinWait,
 	"exec":            builtinExecStub,
 	"let":             builtinLet,
+	"getopts":         builtinGetopts,
 }
 
 // builtinCd changes the shell's working directory.
@@ -803,6 +804,172 @@ func builtinLet(state *shellState, args []string, stdin, stdout, stderr *os.File
 		return 0
 	}
 	return 1
+}
+
+// builtinGetopts parses options from positional parameters or a custom arg list.
+//
+//	getopts optstring name [args...]
+//
+// Processes one option per invocation. OPTIND tracks position across calls.
+// Leading ':' in optstring enables silent error reporting.
+func builtinGetopts(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	if len(args) < 2 {
+		fmt.Fprintln(stderr, "gosh: getopts: usage: getopts optstring name [arg ...]")
+		return 2
+	}
+
+	optstring := args[0]
+	name := args[1]
+
+	// Determine arg list: custom args or positional params.
+	var argList []string
+	if len(args) > 2 {
+		argList = args[2:]
+	} else {
+		argList = state.positionalParams
+	}
+
+	// Detect silent mode.
+	silent := len(optstring) > 0 && optstring[0] == ':'
+	lookupStr := optstring
+	if silent {
+		lookupStr = optstring[1:]
+	}
+
+	// Read OPTIND (1-based).
+	optind := 1
+	if v, ok := state.vars["OPTIND"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			optind = n
+		}
+	}
+
+	// Read internal char position tracker.
+	optpos := 0
+	if v, ok := state.vars["_OPTPOS"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			optpos = n
+		}
+	}
+
+	// Detect if OPTIND was externally changed (e.g., user set OPTIND=1 to reset).
+	// Compare against the last value getopts wrote.
+	if lastInd, ok := state.vars["_OPTIND_LAST"]; ok {
+		if strconv.Itoa(optind) != lastInd {
+			optpos = 0
+		}
+	} else if optind == 1 {
+		// First call ever: ensure optpos starts at 0.
+		optpos = 0
+	}
+
+	// Helper to update OPTIND and sync the tracking variable.
+	setOptind := func(n int) {
+		s := strconv.Itoa(n)
+		state.setVar("OPTIND", s)
+		state.setVar("_OPTIND_LAST", s)
+	}
+
+	argIdx := optind - 1
+	if argIdx >= len(argList) {
+		state.setVar(name, "?")
+		return 1
+	}
+
+	current := argList[argIdx]
+
+	// Check if current arg is an option.
+	if current == "--" {
+		setOptind(optind + 1)
+		state.setVar("_OPTPOS", "0")
+		state.setVar(name, "?")
+		return 1
+	}
+	if len(current) < 2 || current[0] != '-' {
+		state.setVar(name, "?")
+		return 1
+	}
+
+	// Determine char position within the current arg.
+	charPos := optpos
+	if charPos == 0 {
+		charPos = 1 // skip the leading '-'
+	}
+
+	if charPos >= len(current) {
+		state.setVar(name, "?")
+		return 1
+	}
+
+	optChar := current[charPos]
+
+	// advanceChar moves past the current option character, advancing
+	// OPTIND when the bundled arg is fully consumed.
+	advanceChar := func() {
+		charPos++
+		if charPos >= len(current) {
+			setOptind(optind + 1)
+			state.setVar("_OPTPOS", "0")
+		} else {
+			state.setVar("_OPTPOS", strconv.Itoa(charPos))
+			// Keep _OPTIND_LAST in sync even when OPTIND doesn't change.
+			state.setVar("_OPTIND_LAST", strconv.Itoa(optind))
+		}
+	}
+
+	// Look up optChar in optstring.
+	idx := strings.IndexByte(lookupStr, optChar)
+	if idx < 0 {
+		// Unknown option.
+		if !silent {
+			fmt.Fprintf(stderr, "gosh: getopts: illegal option -- %c\n", optChar)
+		}
+		state.setVar(name, "?")
+		if silent {
+			state.setVar("OPTARG", string(optChar))
+		} else {
+			state.unsetVar("OPTARG")
+		}
+		advanceChar()
+		return 0
+	}
+
+	// Check if this option takes an argument.
+	takesArg := idx+1 < len(lookupStr) && lookupStr[idx+1] == ':'
+
+	if !takesArg {
+		state.setVar(name, string(optChar))
+		state.unsetVar("OPTARG")
+		advanceChar()
+		return 0
+	}
+
+	// Option takes an argument.
+	state.setVar(name, string(optChar))
+	if charPos+1 < len(current) {
+		// Rest of current arg is the option argument.
+		state.setVar("OPTARG", current[charPos+1:])
+		setOptind(optind + 1)
+		state.setVar("_OPTPOS", "0")
+	} else if argIdx+1 < len(argList) {
+		// Next arg is the option argument.
+		state.setVar("OPTARG", argList[argIdx+1])
+		setOptind(optind + 2)
+		state.setVar("_OPTPOS", "0")
+	} else {
+		// Missing argument.
+		if silent {
+			state.setVar(name, ":")
+			state.setVar("OPTARG", string(optChar))
+		} else {
+			fmt.Fprintf(stderr, "gosh: getopts: option requires an argument -- %c\n", optChar)
+			state.setVar(name, "?")
+			state.unsetVar("OPTARG")
+		}
+		setOptind(optind + 1)
+		state.setVar("_OPTPOS", "0")
+	}
+	return 0
 }
 
 func init() {

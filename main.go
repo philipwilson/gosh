@@ -93,6 +93,7 @@ func newShellState() *shellState {
 		s.vars["PS3"] = "#? "
 	}
 
+	s.vars["OPTIND"] = "1"
 	s.startTime = time.Now()
 	s.traps = make(map[string]string)
 	s.pendingSignals = make(map[string]bool)

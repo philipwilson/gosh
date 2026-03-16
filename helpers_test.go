@@ -77,7 +77,7 @@ func runCapture(t *testing.T, state *shellState, cmd string) string {
 		t.Fatalf("pipe: %v", err)
 	}
 
-	execList(state, list, os.Stdin, w)
+	execList(state, list, os.Stdin, w, os.Stderr)
 	w.Close()
 
 	out, err := io.ReadAll(r)
@@ -142,7 +142,7 @@ func runCaptureWithStdin(t *testing.T, state *shellState, cmd, stdinData string)
 		t.Fatalf("pipe: %v", err)
 	}
 
-	execList(state, list, rIn, wOut)
+	execList(state, list, rIn, wOut, os.Stderr)
 	wOut.Close()
 	rIn.Close()
 
@@ -155,6 +155,8 @@ func runCaptureWithStdin(t *testing.T, state *shellState, cmd, stdinData string)
 }
 
 // runCaptureBoth runs a command capturing both stdout and stderr.
+// We also temporarily swap os.Stderr so that code paths that write
+// to os.Stderr directly (e.g. lookup's nounset message) are captured.
 func runCaptureBoth(t *testing.T, state *shellState, cmd string) (stdout, stderr string) {
 	t.Helper()
 	tokens, err := lexer.Lex(cmd)
@@ -174,7 +176,8 @@ func runCaptureBoth(t *testing.T, state *shellState, cmd string) (stdout, stderr
 		t.Fatalf("pipe: %v", err)
 	}
 
-	// Capture stderr.
+	// Capture stderr — also swap os.Stderr for code that writes
+	// directly (e.g. lookup's nounset error).
 	oldStderr := os.Stderr
 	rErr, wErr, err := os.Pipe()
 	if err != nil {
@@ -182,7 +185,7 @@ func runCaptureBoth(t *testing.T, state *shellState, cmd string) (stdout, stderr
 	}
 	os.Stderr = wErr
 
-	execList(state, list, os.Stdin, wOut)
+	execList(state, list, os.Stdin, wOut, wErr)
 	wOut.Close()
 	wErr.Close()
 	os.Stderr = oldStderr

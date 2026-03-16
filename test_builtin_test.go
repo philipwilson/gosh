@@ -221,7 +221,7 @@ func TestEvalTestBareString(t *testing.T) {
 
 func TestBuiltinBracketMissingClose(t *testing.T) {
 	s := testState(t)
-	status := builtinBracket(s, []string{"-n", "hello"}, os.Stdin, os.Stdout)
+	status := builtinBracket(s, []string{"-n", "hello"}, os.Stdin, os.Stdout, os.Stderr)
 	if status != 2 {
 		t.Errorf("[ without ] should return 2, got %d", status)
 	}
@@ -229,7 +229,7 @@ func TestBuiltinBracketMissingClose(t *testing.T) {
 
 func TestBuiltinBracketWorks(t *testing.T) {
 	s := testState(t)
-	status := builtinBracket(s, []string{"-n", "hello", "]"}, os.Stdin, os.Stdout)
+	status := builtinBracket(s, []string{"-n", "hello", "]"}, os.Stdin, os.Stdout, os.Stderr)
 	if status != 0 {
 		t.Errorf("[ -n hello ] should return 0, got %d", status)
 	}

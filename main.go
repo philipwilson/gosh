@@ -454,7 +454,7 @@ func (s *shellState) cmdSubst(cmd string) (string, error) {
 	// Execute with stdout directed to the pipe. execList handles
 	// per-entry expansion, so no need to expand here.
 	s.substDepth++
-	execList(s, list, os.Stdin, w)
+	execList(s, list, os.Stdin, w, os.Stderr)
 	s.substDepth--
 	w.Close()
 
@@ -536,11 +536,11 @@ func parseSignalSpec(spec string) (string, syscall.Signal, error) {
 
 // runPendingTraps runs any pending signal trap handlers.
 func (s *shellState) runPendingTraps() {
-	s.runPendingTrapsWithIO(os.Stdin, os.Stdout)
+	s.runPendingTrapsWithIO(os.Stdin, os.Stdout, os.Stderr)
 }
 
 // runPendingTrapsWithIO runs pending signal traps with the given I/O.
-func (s *shellState) runPendingTrapsWithIO(stdin, stdout *os.File) {
+func (s *shellState) runPendingTrapsWithIO(stdin, stdout, stderr *os.File) {
 	if s.trapRunning {
 		return
 	}
@@ -554,17 +554,17 @@ func (s *shellState) runPendingTrapsWithIO(stdin, stdout *os.File) {
 	s.pendingMu.Unlock()
 
 	for _, name := range pending {
-		s.runTrapWithIO(name, stdin, stdout)
+		s.runTrapWithIO(name, stdin, stdout, stderr)
 	}
 }
 
 // runTrap runs a named trap handler if one is registered.
 func (s *shellState) runTrap(name string) {
-	s.runTrapWithIO(name, os.Stdin, os.Stdout)
+	s.runTrapWithIO(name, os.Stdin, os.Stdout, os.Stderr)
 }
 
 // runTrapWithIO runs a named trap handler with the given I/O.
-func (s *shellState) runTrapWithIO(name string, stdin, stdout *os.File) {
+func (s *shellState) runTrapWithIO(name string, stdin, stdout, stderr *os.File) {
 	cmd, ok := s.traps[name]
 	if !ok {
 		return
@@ -579,7 +579,7 @@ func (s *shellState) runTrapWithIO(name string, stdin, stdout *os.File) {
 		tokens = expandAliases(s, tokens)
 		list, perr := parser.Parse(tokens)
 		if perr == nil {
-			execList(s, list, stdin, stdout)
+			execList(s, list, stdin, stdout, stderr)
 		}
 	}
 	s.trapRunning = false
@@ -649,9 +649,14 @@ func main() {
 
 // runScript executes a script file and returns the exit status.
 func runScript(state *shellState, path string) int {
+	return runScriptWithIO(state, path, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// runScriptWithIO executes a script file with the given I/O.
+func runScriptWithIO(state *shellState, path string, stdin, stdout, stderr *os.File) int {
 	f, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: %v\n", err)
 		return 127
 	}
 	defer f.Close()
@@ -682,7 +687,7 @@ func runScript(state *shellState, path string) int {
 
 		tokens, err := lexer.Lex(line)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: %v\n", err)
 			continue
 		}
 
@@ -694,18 +699,18 @@ func runScript(state *shellState, path string) int {
 				return scanner.Text(), true
 			})
 			if hdErr != nil {
-				fmt.Fprintf(os.Stderr, "gosh: %v\n", hdErr)
+				fmt.Fprintf(stderr, "gosh: %v\n", hdErr)
 				continue
 			}
 		}
 
-		if runTokens(state, tokens) {
+		if runTokensWithIO(state, tokens, stdin, stdout, stderr) {
 			break
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "gosh: %s: %v\n", path, err)
 		if state.lastStatus == 0 {
 			state.lastStatus = 1
 		}
@@ -976,17 +981,27 @@ func needsMore(line string) bool {
 // runLine lexes, parses, expands, and executes a single input line.
 // Returns true if the shell should exit.
 func runLine(state *shellState, line string) bool {
+	return runLineWithIO(state, line, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// runLineWithIO lexes, parses, and executes a line with the given I/O.
+func runLineWithIO(state *shellState, line string, stdin, stdout, stderr *os.File) bool {
 	tokens, err := lexer.Lex(line)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: %v\n", err)
 		return false
 	}
-	return runTokens(state, tokens)
+	return runTokensWithIO(state, tokens, stdin, stdout, stderr)
 }
 
 // runTokens parses and executes a pre-lexed token stream.
 // Returns true if the shell should exit.
 func runTokens(state *shellState, tokens []lexer.Token) bool {
+	return runTokensWithIO(state, tokens, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// runTokensWithIO parses and executes a pre-lexed token stream with the given I/O.
+func runTokensWithIO(state *shellState, tokens []lexer.Token, stdin, stdout, stderr *os.File) bool {
 	if len(tokens) == 1 && tokens[0].Type == lexer.TOKEN_EOF {
 		return false
 	}
@@ -996,23 +1011,23 @@ func runTokens(state *shellState, tokens []lexer.Token) bool {
 
 	if state.debugTokens {
 		for _, tok := range tokens {
-			fmt.Fprintf(os.Stderr, "  %s\n", tok)
+			fmt.Fprintf(stderr, "  %s\n", tok)
 		}
 	}
 
 	list, err := parser.Parse(tokens)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: %v\n", err)
 		return false
 	}
 
 	if state.debugAST {
-		fmt.Fprintf(os.Stderr, "  %s\n", list)
+		fmt.Fprintf(stderr, "  %s\n", list)
 	}
 
 	// execList handles per-entry expansion (lazy), so no
 	// expander.Expand call here. debugExpanded is also in execList.
-	execList(state, list, os.Stdin, os.Stdout)
+	execList(state, list, stdin, stdout, stderr)
 
 	return state.exitFlag
 }

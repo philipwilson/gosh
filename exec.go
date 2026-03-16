@@ -23,7 +23,7 @@ import (
 //	;  — always run the next pipeline
 //	&& — run the next pipeline only if the previous succeeded (status 0)
 //	|| — run the next pipeline only if the previous failed (status != 0)
-func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
+func execList(state *shellState, list *parser.List, stdin, stdout, stderr *os.File) {
 	for i := range list.Entries {
 		if i > 0 {
 			prevOp := list.Entries[i-1].Op
@@ -54,7 +54,7 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 		if state.nounsetError {
 			state.nounsetError = false
 			state.lastStatus = 1
-			state.runTrapWithIO("ERR", stdin, stdout)
+			state.runTrapWithIO("ERR", stdin, stdout, stderr)
 			if suppressErrexit {
 				state.noErrexit--
 			}
@@ -66,19 +66,19 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 		}
 
 		if state.debugExpanded {
-			fmt.Fprintf(os.Stderr, "  %s\n", list.Entries[i].Pipeline)
+			fmt.Fprintf(stderr, "  %s\n", list.Entries[i].Pipeline)
 		}
 
 		if list.Entries[i].Op == "&" {
-			execBackground(state, list.Entries[i].Pipeline)
+			execBackground(state, list.Entries[i].Pipeline, stderr)
 		} else {
-			execPipeline(state, list.Entries[i].Pipeline, stdin, stdout)
+			execPipeline(state, list.Entries[i].Pipeline, stdin, stdout, stderr)
 		}
 
 		// Run pending signal traps and ERR trap.
-		state.runPendingTrapsWithIO(stdin, stdout)
+		state.runPendingTrapsWithIO(stdin, stdout, stderr)
 		if state.lastStatus != 0 {
-			state.runTrapWithIO("ERR", stdin, stdout)
+			state.runTrapWithIO("ERR", stdin, stdout, stderr)
 		}
 
 		if suppressErrexit {
@@ -99,7 +99,7 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 }
 
 // execBackground starts a pipeline in the background without waiting.
-func execBackground(state *shellState, pipe *parser.Pipeline) {
+func execBackground(state *shellState, pipe *parser.Pipeline, stderr *os.File) {
 	n := len(pipe.Cmds)
 
 	type pipePair struct{ r, w *os.File }
@@ -109,7 +109,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 		for i := range pipes {
 			r, w, err := os.Pipe()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "gosh: pipe: %v\n", err)
+				fmt.Fprintf(stderr, "gosh: pipe: %v\n", err)
 				return
 			}
 			pipes[i] = pipePair{r, w}
@@ -136,7 +136,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 		}
 
 		if simple, ok := cmd.(*parser.SimpleCmd); ok {
-			fds := [3]*os.File{sin, sout, os.Stderr}
+			fds := [3]*os.File{sin, sout, stderr}
 			proc, opened := startProcess(state, simple, fds, pgid)
 			// Close files opened by redirects immediately — the child has
 			// inherited them.
@@ -164,7 +164,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 				goroutineOwned[cmdOut] = true
 			}
 			go func() {
-				execCommand(clone, body, cmdIn, cmdOut)
+				execCommand(clone, body, cmdIn, cmdOut, stderr)
 				if i > 0 {
 					cmdIn.Close()
 				}
@@ -201,18 +201,18 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 
 	j := state.addJob(pgid, pids, cmdText, jobRunning)
 	state.lastBgPid = pgid
-	fmt.Fprintf(os.Stderr, "[%d] %d\n", j.id, pgid)
+	fmt.Fprintf(stderr, "[%d] %d\n", j.id, pgid)
 	state.lastStatus = 0
 }
 
 // execPipeline runs a pipeline of one or more commands.
 // Terminal foreground control is only applied when not inside a
 // command substitution (state.substDepth == 0).
-func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.File) {
+func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout, stderr *os.File) {
 	n := len(pipe.Cmds)
 
 	if n == 1 {
-		state.lastStatus = execCommand(state, pipe.Cmds[0], stdin, stdout)
+		state.lastStatus = execCommand(state, pipe.Cmds[0], stdin, stdout, stderr)
 		return
 	}
 
@@ -228,7 +228,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 	for i := range pipes {
 		r, w, err := os.Pipe()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: pipe: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: pipe: %v\n", err)
 			return
 		}
 		pipes[i] = pipePair{r, w}
@@ -262,7 +262,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 		}
 
 		if simple, ok := cmd.(*parser.SimpleCmd); ok {
-			fds := [3]*os.File{sin, sout, os.Stderr}
+			fds := [3]*os.File{sin, sout, stderr}
 			proc, opened := startProcess(state, simple, fds, pgid)
 			infos[i] = procInfo{proc: proc, files: opened}
 
@@ -289,7 +289,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				compoundStatus[idx] = execCommand(clone, body, cmdIn, cmdOut)
+				compoundStatus[idx] = execCommand(clone, body, cmdIn, cmdOut, stderr)
 				if idx > 0 {
 					cmdIn.Close()
 				}
@@ -377,23 +377,23 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 		}
 		cmdText := strings.Join(cmdParts, " | ")
 		j := state.addJob(pgid, pids, cmdText, jobStopped)
-		fmt.Fprintf(os.Stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
+		fmt.Fprintf(stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
 	}
 }
 
 // withRedirects applies redirections around a compound command body.
 // If no redirects are present, it calls fn directly with the original fds.
-func withRedirects(redirs []parser.Redirect, stdin, stdout *os.File, fn func(*os.File, *os.File) int) int {
+func withRedirects(redirs []parser.Redirect, stdin, stdout, stderr *os.File, fn func(*os.File, *os.File, *os.File) int) int {
 	if len(redirs) == 0 {
-		return fn(stdin, stdout)
+		return fn(stdin, stdout, stderr)
 	}
-	fds := [3]*os.File{stdin, stdout, os.Stderr}
+	fds := [3]*os.File{stdin, stdout, stderr}
 	fds, opened, err := applyRedirects(redirs, fds)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: %v\n", err)
 		return 1
 	}
-	result := fn(fds[0], fds[1])
+	result := fn(fds[0], fds[1], fds[2])
 	for _, f := range opened {
 		f.Close()
 	}
@@ -401,62 +401,62 @@ func withRedirects(redirs []parser.Redirect, stdin, stdout *os.File, fn func(*os
 }
 
 // execCommand dispatches a Command (simple or compound) for execution.
-func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) int {
+func execCommand(state *shellState, cmd parser.Command, stdin, stdout, stderr *os.File) int {
 	switch c := cmd.(type) {
 	case *parser.SimpleCmd:
-		return execSimple(state, c, stdin, stdout)
+		return execSimple(state, c, stdin, stdout, stderr)
 	case *parser.IfCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execIf(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execIf(state, c, in, out, serr)
 		})
 	case *parser.WhileCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execWhile(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execWhile(state, c, in, out, serr)
 		})
 	case *parser.UntilCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execUntil(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execUntil(state, c, in, out, serr)
 		})
 	case *parser.ForCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execFor(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execFor(state, c, in, out, serr)
 		})
 	case *parser.ArithForCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execArithFor(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execArithFor(state, c, in, out, serr)
 		})
 	case *parser.CaseCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execCase(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execCase(state, c, in, out, serr)
 		})
 	case *parser.SelectCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execSelect(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execSelect(state, c, in, out, serr)
 		})
 	case *parser.DblBracketCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execDblBracket(state, c)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execDblBracket(state, c, serr)
 		})
 	case *parser.SubshellCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execSubshell(state, c, in, out)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execSubshell(state, c, in, out, serr)
 		})
 	case *parser.ArithCmd:
-		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
-			return execArithCmd(state, c)
+		return withRedirects(c.Redirects, stdin, stdout, stderr, func(in, out, serr *os.File) int {
+			return execArithCmd(state, c, serr)
 		})
 	case *parser.FuncDef:
 		state.funcs[c.Name] = c.Body
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
+		fmt.Fprintf(stderr, "gosh: unknown command type\n")
 		return 1
 	}
 }
 
 // execSubshell runs commands in an isolated variable scope.
 // Variable changes inside the subshell do not affect the parent.
-func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.File) int {
+func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, stderr *os.File) int {
 	// Save shell state.
 	savedVars := make(map[string]string, len(state.vars))
 	for k, v := range state.vars {
@@ -493,7 +493,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 
 	// Run the body.
 	body := parser.CloneList(cmd.Body)
-	execList(state, body, stdin, stdout)
+	execList(state, body, stdin, stdout, stderr)
 	status := state.lastStatus
 
 	// Restore shell state.
@@ -516,7 +516,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 
 // execArithCmd evaluates a (( expr )) arithmetic command.
 // Returns 0 if the expression result is non-zero, 1 if zero (bash semantics).
-func execArithCmd(state *shellState, cmd *parser.ArithCmd) int {
+func execArithCmd(state *shellState, cmd *parser.ArithCmd, stderr *os.File) int {
 	lookup := func(name string) string { return state.lookup(name) }
 	setVar := func(name, value string) { state.setVar(name, value) }
 
@@ -525,7 +525,7 @@ func execArithCmd(state *shellState, cmd *parser.ArithCmd) int {
 
 	val, err := expander.EvalArith(expr, lookup, setVar)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: ((%s)): %s\n", cmd.Expr, err)
+		fmt.Fprintf(stderr, "gosh: ((%s)): %s\n", cmd.Expr, err)
 		return 1
 	}
 	if val != 0 {
@@ -536,23 +536,23 @@ func execArithCmd(state *shellState, cmd *parser.ArithCmd) int {
 
 // execIf evaluates an if/elif/else/fi command. Each condition and
 // body is expanded lazily — only the taken branch is expanded.
-func execIf(state *shellState, cmd *parser.IfCmd, stdin, stdout *os.File) int {
+func execIf(state *shellState, cmd *parser.IfCmd, stdin, stdout, stderr *os.File) int {
 	for _, clause := range cmd.Clauses {
 		cond := parser.CloneList(clause.Condition)
 		state.noErrexit++
-		execList(state, cond, stdin, stdout)
+		execList(state, cond, stdin, stdout, stderr)
 		state.noErrexit--
 
 		if state.lastStatus == 0 {
 			body := parser.CloneList(clause.Body)
-			execList(state, body, stdin, stdout)
+			execList(state, body, stdin, stdout, stderr)
 			return state.lastStatus
 		}
 	}
 
 	if cmd.ElseBody != nil {
 		body := parser.CloneList(cmd.ElseBody)
-		execList(state, body, stdin, stdout)
+		execList(state, body, stdin, stdout, stderr)
 		return state.lastStatus
 	}
 
@@ -564,14 +564,14 @@ func execIf(state *shellState, cmd *parser.IfCmd, stdin, stdout *os.File) int {
 // execWhile evaluates a while/do/done loop. The condition and body
 // are cloned before each iteration so that $VAR references in the
 // original AST are preserved for re-expansion.
-func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout *os.File) int {
+func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout, stderr *os.File) int {
 	state.loopDepth++
 	defer func() { state.loopDepth-- }()
 
 	for {
 		cond := parser.CloneList(cmd.Condition)
 		state.noErrexit++
-		execList(state, cond, stdin, stdout)
+		execList(state, cond, stdin, stdout, stderr)
 		state.noErrexit--
 
 		if state.lastStatus != 0 || state.breakFlag {
@@ -583,7 +583,7 @@ func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout *os.File) 
 		}
 
 		body := parser.CloneList(cmd.Body)
-		execList(state, body, stdin, stdout)
+		execList(state, body, stdin, stdout, stderr)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -601,14 +601,14 @@ func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout *os.File) 
 
 // execUntil evaluates an until/do/done loop. Like while but with
 // an inverted condition: runs body while condition is non-zero.
-func execUntil(state *shellState, cmd *parser.UntilCmd, stdin, stdout *os.File) int {
+func execUntil(state *shellState, cmd *parser.UntilCmd, stdin, stdout, stderr *os.File) int {
 	state.loopDepth++
 	defer func() { state.loopDepth-- }()
 
 	for {
 		cond := parser.CloneList(cmd.Condition)
 		state.noErrexit++
-		execList(state, cond, stdin, stdout)
+		execList(state, cond, stdin, stdout, stderr)
 		state.noErrexit--
 
 		if state.lastStatus == 0 || state.breakFlag {
@@ -618,7 +618,7 @@ func execUntil(state *shellState, cmd *parser.UntilCmd, stdin, stdout *os.File) 
 		}
 
 		body := parser.CloneList(cmd.Body)
-		execList(state, body, stdin, stdout)
+		execList(state, body, stdin, stdout, stderr)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -637,7 +637,7 @@ func execUntil(state *shellState, cmd *parser.UntilCmd, stdin, stdout *os.File) 
 // execFor evaluates a for/in/do/done loop. The word list is expanded
 // once (variables + globs), then the body runs for each resulting word
 // with the loop variable set.
-func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int {
+func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout, stderr *os.File) int {
 	// Expand the word list: variable expansion + glob expansion.
 	// Build a temporary SimpleCmd to reuse the expander's word logic.
 	expandedWords := make([]lexer.Word, len(cmd.Words))
@@ -666,7 +666,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int 
 		state.setVar(cmd.VarName, val)
 
 		body := parser.CloneList(cmd.Body)
-		execList(state, body, stdin, stdout)
+		execList(state, body, stdin, stdout, stderr)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -683,7 +683,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int 
 }
 
 // execArithFor evaluates a for (( init; cond; step )) do body done loop.
-func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.File) int {
+func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout, stderr *os.File) int {
 	lookup := func(name string) string { return state.lookup(name) }
 	setVar := func(name, value string) { state.setVar(name, value) }
 
@@ -691,7 +691,7 @@ func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.
 	if cmd.Init != "" {
 		initExpr := expander.ExpandDollar(cmd.Init, lookup)
 		if _, err := expander.EvalArith(initExpr, lookup, setVar); err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: for((%s)): %s\n", cmd.Init, err)
+			fmt.Fprintf(stderr, "gosh: for((%s)): %s\n", cmd.Init, err)
 			return 1
 		}
 	}
@@ -705,7 +705,7 @@ func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.
 			condExpr := expander.ExpandDollar(cmd.Cond, lookup)
 			val, err := expander.EvalArith(condExpr, lookup, setVar)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "gosh: for((%s)): %s\n", cmd.Cond, err)
+				fmt.Fprintf(stderr, "gosh: for((%s)): %s\n", cmd.Cond, err)
 				return 1
 			}
 			if val == 0 {
@@ -715,7 +715,7 @@ func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.
 
 		// Execute body.
 		body := parser.CloneList(cmd.Body)
-		execList(state, body, stdin, stdout)
+		execList(state, body, stdin, stdout, stderr)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -731,7 +731,7 @@ func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.
 		if cmd.Step != "" {
 			stepExpr := expander.ExpandDollar(cmd.Step, lookup)
 			if _, err := expander.EvalArith(stepExpr, lookup, setVar); err != nil {
-				fmt.Fprintf(os.Stderr, "gosh: for((%s)): %s\n", cmd.Step, err)
+				fmt.Fprintf(stderr, "gosh: for((%s)): %s\n", cmd.Step, err)
 				return 1
 			}
 		}
@@ -743,7 +743,7 @@ func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.
 // execCase evaluates a case/in/esac command. The word is expanded once,
 // then each clause's patterns are expanded and matched using filepath.Match.
 // The body of the first matching clause is executed.
-func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) int {
+func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout, stderr *os.File) int {
 	// Expand the subject word.
 	word := parser.CloneWord(cmd.Word)
 	tmpCmd := &parser.SimpleCmd{Args: []lexer.Word{word}}
@@ -766,7 +766,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) in
 			}
 			if matched {
 				body := parser.CloneList(clause.Body)
-				execList(state, body, stdin, stdout)
+				execList(state, body, stdin, stdout, stderr)
 				return state.lastStatus
 			}
 		}
@@ -781,7 +781,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) in
 // Displays a numbered menu, reads user input from stdin, sets the
 // loop variable to the selected item (or empty for invalid), and
 // sets REPLY to the raw input.
-func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout *os.File) int {
+func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout, stderr *os.File) int {
 	// Expand the word list (same pattern as execFor).
 	expandedWords := make([]lexer.Word, len(cmd.Words))
 	for i, w := range cmd.Words {
@@ -809,7 +809,7 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout *os.File
 	for {
 		if displayMenu {
 			for i, v := range values {
-				fmt.Fprintf(os.Stderr, "%d) %s\n", i+1, v)
+				fmt.Fprintf(stderr, "%d) %s\n", i+1, v)
 			}
 			displayMenu = false
 		}
@@ -819,7 +819,7 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout *os.File
 		if ps3 == "" {
 			ps3 = "#? "
 		}
-		fmt.Fprint(os.Stderr, ps3)
+		fmt.Fprint(stderr, ps3)
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -844,7 +844,7 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout *os.File
 		state.setVar("REPLY", line)
 
 		body := parser.CloneList(cmd.Body)
-		execList(state, body, stdin, stdout)
+		execList(state, body, stdin, stdout, stderr)
 
 		if state.exitFlag || state.returnFlag || state.breakFlag {
 			if state.breakFlag {
@@ -865,24 +865,24 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout *os.File
 // execSimple runs a single command (not in a pipeline).
 // Builtins are handled here; in pipelines they fall through
 // to external commands.
-func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) int {
+func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, stderr *os.File) int {
 	// Handle assignment-only commands: just set variables.
 	if len(cmd.Args) == 0 {
 		for _, a := range cmd.Assigns {
-			execAssignment(state, a)
+			execAssignment(state, a, stderr)
 		}
 		return 0
 	}
 
 	// Process substitution: replace <(cmd) / >(cmd) args with /dev/fd/N.
-	procCleanup := processProcSubsts(state, cmd, stdin, stdout)
+	procCleanup := processProcSubsts(state, cmd, stdin, stdout, stderr)
 	defer procCleanup()
 
 	args := cmd.ArgStrings()
 
 	// Special-case exec: needs access to the SimpleCmd redirects.
 	if len(args) > 0 && args[0] == "exec" {
-		return execExec(state, cmd, args[1:], stdin, stdout)
+		return execExec(state, cmd, args[1:], stdin, stdout, stderr)
 	}
 
 	// Xtrace: print commands before execution.
@@ -891,7 +891,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		if ps4 == "" {
 			ps4 = "+ "
 		}
-		fmt.Fprintf(os.Stderr, "%s%s\n", ps4, strings.Join(args, " "))
+		fmt.Fprintf(stderr, "%s%s\n", ps4, strings.Join(args, " "))
 	}
 
 	// Check for user-defined functions.
@@ -899,18 +899,18 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		saved := make(map[string]savedVar, len(cmd.Assigns))
 		for _, a := range cmd.Assigns {
 			saveVarState(state, saved, a.Name)
-			execAssignment(state, a)
+			execAssignment(state, a, stderr)
 		}
 
-		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		fds := [3]*os.File{stdin, stdout, stderr}
 		fds, opened, err := applyRedirects(cmd.Redirects, fds)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: %v\n", err)
 			restoreVars(state, saved)
 			return 1
 		}
 
-		status := execFunction(state, body, args[1:], fds[0], fds[1])
+		status := execFunction(state, body, args[1:], fds[0], fds[1], fds[2])
 		for _, f := range opened {
 			f.Close()
 		}
@@ -926,17 +926,17 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		saved := make(map[string]savedVar, len(cmd.Assigns))
 		for _, a := range cmd.Assigns {
 			saveVarState(state, saved, a.Name)
-			execAssignment(state, a)
+			execAssignment(state, a, stderr)
 		}
 
-		fds := [3]*os.File{stdin, stdout, os.Stderr}
+		fds := [3]*os.File{stdin, stdout, stderr}
 		fds, opened, err := applyRedirects(cmd.Redirects, fds)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: %v\n", err)
 			restoreVars(state, saved)
 			return 1
 		}
-		status := fn(state, args[1:], fds[0], fds[1])
+		status := fn(state, args[1:], fds[0], fds[1], fds[2])
 		for _, f := range opened {
 			f.Close()
 		}
@@ -946,7 +946,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	}
 
 	// External command.
-	fds := [3]*os.File{stdin, stdout, os.Stderr}
+	fds := [3]*os.File{stdin, stdout, stderr}
 	proc, opened := startProcess(state, cmd, fds, 0)
 	if proc == nil {
 		return 127
@@ -971,7 +971,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	if res.stopped {
 		cmdText := cmd.ArgStrings()
 		j := state.addJob(pgid, []int{pgid}, strings.Join(cmdText, " "), jobStopped)
-		fmt.Fprintf(os.Stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
+		fmt.Fprintf(stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
 		return res.status
 	}
 
@@ -982,7 +982,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 // With args: replaces the shell process with the given command.
 // Without args but with redirects: permanently redirects shell fds.
 // Without args or redirects: no-op.
-func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, stdout *os.File) int {
+func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		// exec with redirects only (or no-op).
 		if len(cmd.Redirects) == 0 {
@@ -991,14 +991,14 @@ func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, st
 		fds := [3]*os.File{os.Stdin, os.Stdout, os.Stderr}
 		fds, _, err := applyRedirects(cmd.Redirects, fds)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: exec: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: exec: %v\n", err)
 			return 1
 		}
 		// Permanently apply redirects via dup2.
 		for i, f := range fds {
 			if f.Fd() != uintptr(i) {
 				if err := syscall.Dup2(int(f.Fd()), i); err != nil {
-					fmt.Fprintf(os.Stderr, "gosh: exec: dup2: %v\n", err)
+					fmt.Fprintf(stderr, "gosh: exec: dup2: %v\n", err)
 					return 1
 				}
 				switch i {
@@ -1017,7 +1017,7 @@ func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, st
 	// exec cmd args... — replace process.
 	path, err := exec.LookPath(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: exec: %s: not found\n", args[0])
+		fmt.Fprintf(stderr, "gosh: exec: %s: not found\n", args[0])
 		return 127
 	}
 
@@ -1025,7 +1025,7 @@ func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, st
 	fds := [3]*os.File{os.Stdin, os.Stdout, os.Stderr}
 	fds, _, redirErr := applyRedirects(cmd.Redirects, fds)
 	if redirErr != nil {
-		fmt.Fprintf(os.Stderr, "gosh: exec: %v\n", redirErr)
+		fmt.Fprintf(stderr, "gosh: exec: %v\n", redirErr)
 		return 1
 	}
 	for i, f := range fds {
@@ -1054,7 +1054,7 @@ func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, st
 }
 
 // execFunction runs a user-defined function body with positional params.
-func execFunction(state *shellState, body *parser.List, args []string, stdin, stdout *os.File) int {
+func execFunction(state *shellState, body *parser.List, args []string, stdin, stdout, stderr *os.File) int {
 	// Save and set positional parameters.
 	savedParams := state.positionalParams
 	state.positionalParams = args
@@ -1063,10 +1063,10 @@ func execFunction(state *shellState, body *parser.List, args []string, stdin, st
 	state.localScopes = append(state.localScopes, make(map[string]savedVar))
 
 	cloned := parser.CloneList(body)
-	execList(state, cloned, stdin, stdout)
+	execList(state, cloned, stdin, stdout, stderr)
 
 	// Fire RETURN trap before restoring state.
-	state.runTrapWithIO("RETURN", stdin, stdout)
+	state.runTrapWithIO("RETURN", stdin, stdout, stderr)
 
 	// Pop and restore local variables.
 	scope := state.localScopes[len(state.localScopes)-1]
@@ -1082,7 +1082,7 @@ func execFunction(state *shellState, body *parser.List, args []string, stdin, st
 
 // execAssignment processes a single assignment, handling scalar, array,
 // and indexed assignments.
-func execAssignment(state *shellState, a parser.Assignment) {
+func execAssignment(state *shellState, a parser.Assignment, stderr *os.File) {
 	if a.Array != nil {
 		// Array assignment: arr=(a b c) or arr+=(x y)
 		var vals []string
@@ -1102,7 +1102,7 @@ func execAssignment(state *shellState, a parser.Assignment) {
 		subscript := expander.ExpandDollar(a.Index, state.lookup)
 		idx, err := expander.EvalArith(subscript, state.lookup, state.setVar)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: %s: bad array subscript\n", a.Index)
+			fmt.Fprintf(stderr, "gosh: %s: bad array subscript\n", a.Index)
 			return
 		}
 		key := a.Name + "[" + strconv.FormatInt(idx, 10) + "]"
@@ -1167,7 +1167,7 @@ func saveVarState(state *shellState, saved map[string]savedVar, name string) {
 // spawns a goroutine to run the inner command, and replaces the arg with
 // the FIFO path. Returns a cleanup function that waits for goroutines and
 // removes the FIFOs.
-func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) func() {
+func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, stderr *os.File) func() {
 	var wg sync.WaitGroup
 	var fifoDir string
 
@@ -1185,14 +1185,14 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *
 			var err error
 			fifoDir, err = os.MkdirTemp("", "gosh-procsub-*")
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "gosh: process substitution: %v\n", err)
+				fmt.Fprintf(stderr, "gosh: process substitution: %v\n", err)
 				continue
 			}
 		}
 
 		fifoPath := filepath.Join(fifoDir, fmt.Sprintf("fifo%d", i))
 		if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: process substitution: mkfifo: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: process substitution: mkfifo: %v\n", err)
 			continue
 		}
 
@@ -1221,7 +1221,7 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *
 				if err != nil {
 					return
 				}
-				execList(cloned, list, os.Stdin, f)
+				execList(cloned, list, os.Stdin, f, os.Stderr)
 			}(innerCmd, fifoPath)
 		} else {
 			// >(cmd): goroutine runs cmd, reads stdin from FIFO
@@ -1242,7 +1242,7 @@ func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *
 				if err != nil {
 					return
 				}
-				execList(cloned, list, f, os.Stdout)
+				execList(cloned, list, f, os.Stdout, os.Stderr)
 			}(innerCmd, fifoPath)
 		}
 	}
@@ -1407,13 +1407,13 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, fds [3]*os.File, pgi
 
 	path, err := exec.LookPath(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %s: command not found\n", args[0])
+		fmt.Fprintf(fds[2], "gosh: %s: command not found\n", args[0])
 		return nil, nil
 	}
 
 	fds, opened, err := applyRedirects(cmd.Redirects, fds)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		fmt.Fprintf(fds[2], "gosh: %v\n", err)
 		return nil, nil
 	}
 
@@ -1431,7 +1431,7 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, fds [3]*os.File, pgi
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", args[0], err)
+		fmt.Fprintf(fds[2], "gosh: %s: %v\n", args[0], err)
 		for _, f := range opened {
 			f.Close()
 		}

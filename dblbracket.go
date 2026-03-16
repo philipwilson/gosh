@@ -13,7 +13,7 @@ import (
 
 // execDblBracket evaluates a [[ expr ]] conditional expression.
 // Variables are expanded but no word splitting or glob expansion is performed.
-func execDblBracket(state *shellState, cmd *parser.DblBracketCmd) int {
+func execDblBracket(state *shellState, cmd *parser.DblBracketCmd, stderr *os.File) int {
 	lookup := func(name string) string { return state.lookup(name) }
 
 	// Expand variables in each item (no splitting/globbing).
@@ -38,11 +38,11 @@ func execDblBracket(state *shellState, cmd *parser.DblBracketCmd) int {
 	p := &bracketParser{strs: strs, words: words, state: state}
 	result, err := p.parseOr()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: [[: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: [[: %v\n", err)
 		return 2
 	}
 	if p.pos < len(p.strs) {
-		fmt.Fprintf(os.Stderr, "gosh: [[: unexpected argument: %s\n", p.strs[p.pos])
+		fmt.Fprintf(stderr, "gosh: [[: unexpected argument: %s\n", p.strs[p.pos])
 		return 2
 	}
 	if result {

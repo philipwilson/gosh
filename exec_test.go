@@ -893,3 +893,38 @@ func TestCompoundRedirInPipeline(t *testing.T) {
 	got := runCapture(t, s, `for x in c b a; do echo $x; done | sort > `+tmp+`; cat `+tmp)
 	assertOutput(t, got, "a\nb\nc")
 }
+
+// --- Compound stderr threading tests ---
+
+func TestCompoundStderrCapture(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `for x in a b; do echo $x; echo err >&2; done > `+tmp+` 2>&1; cat `+tmp)
+	assertOutput(t, got, "a\nerr\nb\nerr")
+}
+
+func TestIfStderrCapture(t *testing.T) {
+	s := testState(t)
+	got, _ := runCaptureBoth(t, s, `if true; then echo err >&2; fi 2>&1`)
+	assertOutput(t, got, "err")
+}
+
+func TestSubshellStderrCapture(t *testing.T) {
+	s := testState(t)
+	got, _ := runCaptureBoth(t, s, `(echo err >&2) 2>&1`)
+	assertOutput(t, got, "err")
+}
+
+func TestCompoundStderrSuppressed(t *testing.T) {
+	s := testState(t)
+	_, stderr := runCaptureBoth(t, s, `for x in a; do echo err >&2; done 2>/dev/null`)
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
+	}
+}
+
+func TestFunctionStderrRedirect(t *testing.T) {
+	s := testState(t)
+	got, _ := runCaptureBoth(t, s, `f() { echo err >&2; }; f 2>&1`)
+	assertOutput(t, got, "err")
+}

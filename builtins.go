@@ -15,7 +15,7 @@ import (
 
 // builtinFunc is the signature for all builtin commands.
 // stdin and stdout are the files for I/O (may be redirected).
-type builtinFunc func(state *shellState, args []string, stdin, stdout *os.File) int
+type builtinFunc func(state *shellState, args []string, stdin, stdout, stderr *os.File) int
 
 // builtins maps command names to their builtin implementations.
 // These run in the shell process (not forked), which is required
@@ -58,27 +58,27 @@ var builtins = map[string]builtinFunc{
 
 // builtinCd changes the shell's working directory.
 // With no arguments, changes to $HOME.
-func builtinCd(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinCd(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	var dir string
 	switch len(args) {
 	case 0:
 		dir = state.vars["HOME"]
 		if dir == "" {
-			fmt.Fprintln(os.Stderr, "gosh: cd: HOME not set")
+			fmt.Fprintln(stderr, "gosh: cd: HOME not set")
 			return 1
 		}
 	case 1:
 		if args[0] == "-" {
 			dir = state.vars["OLDPWD"]
 			if dir == "" {
-				fmt.Fprintln(os.Stderr, "gosh: cd: OLDPWD not set")
+				fmt.Fprintln(stderr, "gosh: cd: OLDPWD not set")
 				return 1
 			}
 		} else {
 			dir = args[0]
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "gosh: cd: too many arguments")
+		fmt.Fprintln(stderr, "gosh: cd: too many arguments")
 		return 1
 	}
 
@@ -86,7 +86,7 @@ func builtinCd(state *shellState, args []string, stdin, stdout *os.File) int {
 	oldwd, _ := os.Getwd()
 
 	if err := os.Chdir(dir); err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: cd: %s: %v\n", dir, err)
+		fmt.Fprintf(stderr, "gosh: cd: %s: %v\n", dir, err)
 		return 1
 	}
 
@@ -103,10 +103,10 @@ func builtinCd(state *shellState, args []string, stdin, stdout *os.File) int {
 }
 
 // builtinPwd prints the current working directory.
-func builtinPwd(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinPwd(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	wd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: pwd: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: pwd: %v\n", err)
 		return 1
 	}
 	fmt.Fprintln(stdout, wd)
@@ -115,7 +115,7 @@ func builtinPwd(state *shellState, args []string, stdin, stdout *os.File) int {
 
 // builtinEcho prints its arguments separated by spaces.
 // Supports -n to suppress the trailing newline.
-func builtinEcho(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinEcho(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	suppressNewline := false
 	start := 0
 	if len(args) > 0 && args[0] == "-n" {
@@ -131,12 +131,12 @@ func builtinEcho(state *shellState, args []string, stdin, stdout *os.File) int {
 
 // builtinExit sets the exit flag to stop the REPL.
 // Optional argument is the exit status (default 0).
-func builtinExit(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinExit(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	status := 0
 	if len(args) > 0 {
 		n, err := strconv.Atoi(args[0])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: exit: %s: numeric argument required\n", args[0])
+			fmt.Fprintf(stderr, "gosh: exit: %s: numeric argument required\n", args[0])
 			status = 2
 		} else {
 			status = n
@@ -148,9 +148,9 @@ func builtinExit(state *shellState, args []string, stdin, stdout *os.File) int {
 }
 
 // builtinBreak exits the innermost for/while loop.
-func builtinBreak(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinBreak(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if state.loopDepth == 0 {
-		fmt.Fprintln(os.Stderr, "gosh: break: only meaningful in a loop")
+		fmt.Fprintln(stderr, "gosh: break: only meaningful in a loop")
 		return 1
 	}
 	state.breakFlag = true
@@ -158,9 +158,9 @@ func builtinBreak(state *shellState, args []string, stdin, stdout *os.File) int 
 }
 
 // builtinContinue skips to the next iteration of the innermost for/while loop.
-func builtinContinue(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinContinue(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if state.loopDepth == 0 {
-		fmt.Fprintln(os.Stderr, "gosh: continue: only meaningful in a loop")
+		fmt.Fprintln(stderr, "gosh: continue: only meaningful in a loop")
 		return 1
 	}
 	state.continueFlag = true
@@ -168,12 +168,12 @@ func builtinContinue(state *shellState, args []string, stdin, stdout *os.File) i
 }
 
 // builtinReturn exits the current function with an optional status.
-func builtinReturn(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinReturn(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	status := state.lastStatus
 	if len(args) > 0 {
 		n, err := strconv.Atoi(args[0])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: return: %s: numeric argument required\n", args[0])
+			fmt.Fprintf(stderr, "gosh: return: %s: numeric argument required\n", args[0])
 			return 2
 		}
 		status = n
@@ -185,18 +185,18 @@ func builtinReturn(state *shellState, args []string, stdin, stdout *os.File) int
 
 // builtinShift shifts positional parameters to the left by N (default 1).
 // $1 is removed, $2 becomes $1, etc.
-func builtinShift(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinShift(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	n := 1
 	if len(args) > 0 {
 		var err error
 		n, err = strconv.Atoi(args[0])
 		if err != nil || n < 0 {
-			fmt.Fprintf(os.Stderr, "gosh: shift: %s: numeric argument required\n", args[0])
+			fmt.Fprintf(stderr, "gosh: shift: %s: numeric argument required\n", args[0])
 			return 1
 		}
 	}
 	if n > len(state.positionalParams) {
-		fmt.Fprintf(os.Stderr, "gosh: shift: shift count out of range\n")
+		fmt.Fprintf(stderr, "gosh: shift: shift count out of range\n")
 		return 1
 	}
 	state.positionalParams = state.positionalParams[n:]
@@ -211,9 +211,9 @@ func builtinShift(state *shellState, args []string, stdin, stdout *os.File) int 
 // will be restored when the function returns. Can only be used
 // inside a function. Supports "local var" (sets to empty) and
 // "local var=value" (sets to value).
-func builtinLocal(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinLocal(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(state.localScopes) == 0 {
-		fmt.Fprintln(os.Stderr, "gosh: local: can only be used in a function")
+		fmt.Fprintln(stderr, "gosh: local: can only be used in a function")
 		return 1
 	}
 
@@ -264,7 +264,7 @@ func builtinLocal(state *shellState, args []string, stdin, stdout *os.File) int 
 //	alias              — list all aliases
 //	alias name=value   — define an alias
 //	alias name         — print the alias definition
-func builtinAlias(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinAlias(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		// List all aliases, sorted.
 		names := make([]string, 0, len(state.aliases))
@@ -287,7 +287,7 @@ func builtinAlias(state *shellState, args []string, stdin, stdout *os.File) int 
 			if val, ok := state.aliases[arg]; ok {
 				fmt.Fprintf(stdout, "alias %s=%q\n", arg, val)
 			} else {
-				fmt.Fprintf(os.Stderr, "gosh: alias: %s: not found\n", arg)
+				fmt.Fprintf(stderr, "gosh: alias: %s: not found\n", arg)
 				status = 1
 			}
 		}
@@ -299,9 +299,9 @@ func builtinAlias(state *shellState, args []string, stdin, stdout *os.File) int 
 //
 //	unalias name ...
 //	unalias -a          — remove all aliases
-func builtinUnalias(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinUnalias(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "gosh: unalias: usage: unalias [-a] name ...")
+		fmt.Fprintln(stderr, "gosh: unalias: usage: unalias [-a] name ...")
 		return 1
 	}
 
@@ -315,7 +315,7 @@ func builtinUnalias(state *shellState, args []string, stdin, stdout *os.File) in
 		if _, ok := state.aliases[name]; ok {
 			delete(state.aliases, name)
 		} else {
-			fmt.Fprintf(os.Stderr, "gosh: unalias: %s: not found\n", name)
+			fmt.Fprintf(stderr, "gosh: unalias: %s: not found\n", name)
 			status = 1
 		}
 	}
@@ -324,7 +324,7 @@ func builtinUnalias(state *shellState, args []string, stdin, stdout *os.File) in
 
 // builtinExport marks variables for export to child processes.
 // Supports "export VAR" and "export VAR=VALUE".
-func builtinExport(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinExport(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		for k := range state.exported {
 			fmt.Fprintf(stdout, "export %s=%q\n", k, state.vars[k])
@@ -344,7 +344,7 @@ func builtinExport(state *shellState, args []string, stdin, stdout *os.File) int
 
 // builtinUnset removes variables from the shell.
 // Supports unsetting array elements: unset 'arr[N]'
-func builtinUnset(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinUnset(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	for _, name := range args {
 		// Strip quotes that the user might have used to protect brackets.
 		name = strings.Trim(name, "'\"")
@@ -363,7 +363,7 @@ func builtinUnset(state *shellState, args []string, stdin, stdout *os.File) int 
 // in REPLY. Returns 1 on EOF, 0 otherwise.
 //
 // -r: raw mode — backslash does not act as an escape character.
-func builtinRead(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinRead(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	raw := false
 	readArray := false
 	varNames := args
@@ -525,17 +525,17 @@ func splitByIFS(line, ifs string, maxFields int) []string {
 	return fields
 }
 
-func builtinTrue(state *shellState, args []string, stdin, stdout *os.File) int  { return 0 }
-func builtinFalse(state *shellState, args []string, stdin, stdout *os.File) int { return 1 }
+func builtinTrue(state *shellState, args []string, stdin, stdout, stderr *os.File) int  { return 0 }
+func builtinFalse(state *shellState, args []string, stdin, stdout, stderr *os.File) int { return 1 }
 
 // builtinPrintf implements the printf builtin.
 // printf FORMAT [ARGUMENTS...]
 // Supports: %s (string), %d (decimal), %x (hex), %o (octal), %c (char), %% (literal %)
 // Format escape sequences: \n, \t, \\, \", \', \a, \b, \f, \r, \v, \0NNN (octal), \xHH (hex)
 // If more arguments than format specifiers, format is reused.
-func builtinPrintf(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinPrintf(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "gosh: printf: usage: printf format [arguments]")
+		fmt.Fprintln(stderr, "gosh: printf: usage: printf format [arguments]")
 		return 1
 	}
 	format := args[0]
@@ -709,7 +709,7 @@ func hexDigit(ch rune) int {
 }
 
 // builtinDebugTokens toggles printing of the token stream before parsing.
-func builtinDebugTokens(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinDebugTokens(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	state.debugTokens = !state.debugTokens
 	if state.debugTokens {
 		fmt.Fprintln(stdout, "token debugging on")
@@ -720,7 +720,7 @@ func builtinDebugTokens(state *shellState, args []string, stdin, stdout *os.File
 }
 
 // builtinDebugAST toggles printing of the AST before expansion.
-func builtinDebugAST(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinDebugAST(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	state.debugAST = !state.debugAST
 	if state.debugAST {
 		fmt.Fprintln(stdout, "AST debugging on")
@@ -731,7 +731,7 @@ func builtinDebugAST(state *shellState, args []string, stdin, stdout *os.File) i
 }
 
 // builtinDebugExpanded toggles printing of the AST after expansion.
-func builtinDebugExpanded(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinDebugExpanded(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	state.debugExpanded = !state.debugExpanded
 	if state.debugExpanded {
 		fmt.Fprintln(stdout, "expanded AST debugging on")
@@ -742,9 +742,9 @@ func builtinDebugExpanded(state *shellState, args []string, stdin, stdout *os.Fi
 }
 
 // builtinHistory prints the command history.
-func builtinHistory(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinHistory(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if state.ed == nil {
-		fmt.Fprintln(os.Stderr, "gosh: history: not available in non-interactive mode")
+		fmt.Fprintln(stderr, "gosh: history: not available in non-interactive mode")
 		return 1
 	}
 	entries := state.ed.History.Entries()
@@ -755,22 +755,22 @@ func builtinHistory(state *shellState, args []string, stdin, stdout *os.File) in
 }
 
 // builtinVersion prints the shell version.
-func builtinVersion(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinVersion(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	fmt.Fprintf(stdout, "gosh %s\n", version)
 	return 0
 }
 
 // builtinExecStub exists for tab completion and type/command -v.
 // The actual exec logic is in execExec, called from execSimple.
-func builtinExecStub(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinExecStub(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	return 0
 }
 
 // builtinLet evaluates arithmetic expressions.
 // Returns 0 if the last expression is non-zero, 1 if zero (bash semantics).
-func builtinLet(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinLet(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "gosh: let: expression expected\n")
+		fmt.Fprintf(stderr, "gosh: let: expression expected\n")
 		return 1
 	}
 	lookup := func(name string) string { return state.lookup(name) }
@@ -780,7 +780,7 @@ func builtinLet(state *shellState, args []string, stdin, stdout *os.File) int {
 		expr := expander.ExpandDollar(arg, lookup)
 		val, err := expander.EvalArith(expr, lookup, setVar)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: let: %s\n", err)
+			fmt.Fprintf(stderr, "gosh: let: %s\n", err)
 			return 1
 		}
 		last = val
@@ -803,22 +803,22 @@ func init() {
 }
 
 // builtinSource reads and executes a file in the current shell.
-func builtinSource(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinSource(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "gosh: source: filename argument required")
+		fmt.Fprintln(stderr, "gosh: source: filename argument required")
 		return 1
 	}
-	return runScript(state, args[0])
+	return runScriptWithIO(state, args[0], stdin, stdout, stderr)
 }
 
 // builtinEval joins its arguments with spaces and executes the result
 // as a shell command in the current shell context.
-func builtinEval(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinEval(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		return 0
 	}
 	line := strings.Join(args, " ")
-	runLine(state, line)
+	runLineWithIO(state, line, stdin, stdout, stderr)
 	return state.lastStatus
 }
 
@@ -828,7 +828,7 @@ func builtinEval(state *shellState, args []string, stdin, stdout *os.File) int {
 //	trap command signal...  — set trap handler
 //	trap - signal...        — remove trap handler
 //	trap '' signal...       — ignore signal
-func builtinTrap(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinTrap(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		// List all traps.
 		names := make([]string, 0, len(state.traps))
@@ -843,7 +843,7 @@ func builtinTrap(state *shellState, args []string, stdin, stdout *os.File) int {
 	}
 
 	if len(args) == 1 {
-		fmt.Fprintln(os.Stderr, "gosh: trap: usage: trap [-] command signal...")
+		fmt.Fprintln(stderr, "gosh: trap: usage: trap [-] command signal...")
 		return 1
 	}
 
@@ -853,7 +853,7 @@ func builtinTrap(state *shellState, args []string, stdin, stdout *os.File) int {
 	for _, spec := range signals {
 		name, sig, err := parseSignalSpec(spec)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gosh: trap: %v\n", err)
+			fmt.Fprintf(stderr, "gosh: trap: %v\n", err)
 			return 1
 		}
 
@@ -885,7 +885,7 @@ func builtinTrap(state *shellState, args []string, stdin, stdout *os.File) int {
 //	command name args...    — run name, skipping function lookup
 //	command -v name         — print how name would be resolved
 //	command -V name         — verbose: describe how name would be resolved
-func builtinCommand(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinCommand(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		return 0
 	}
@@ -913,7 +913,7 @@ func builtinCommand(state *shellState, args []string, stdin, stdout *os.File) in
 			} else if path, err := exec.LookPath(name); err == nil {
 				fmt.Fprintf(stdout, "%s is %s\n", name, path)
 			} else {
-				fmt.Fprintf(os.Stderr, "gosh: command: %s: not found\n", name)
+				fmt.Fprintf(stderr, "gosh: command: %s: not found\n", name)
 				status = 1
 			}
 		}
@@ -926,26 +926,26 @@ func builtinCommand(state *shellState, args []string, stdin, stdout *os.File) in
 
 	// Check builtins first.
 	if fn, ok := builtins[name]; ok {
-		return fn(state, cmdArgs, stdin, stdout)
+		return fn(state, cmdArgs, stdin, stdout, stderr)
 	}
 
 	// External command lookup.
 	path, err := exec.LookPath(name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: command: %s: not found\n", name)
+		fmt.Fprintf(stderr, "gosh: command: %s: not found\n", name)
 		return 127
 	}
 
 	env := state.environ()
 	proc, err := os.StartProcess(path, args, &os.ProcAttr{
 		Env:   env,
-		Files: []*os.File{stdin, stdout, os.Stderr},
+		Files: []*os.File{stdin, stdout, stderr},
 		Sys: &syscall.SysProcAttr{
 			Setpgid: true,
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", name, err)
+		fmt.Fprintf(stderr, "gosh: %s: %v\n", name, err)
 		return 1
 	}
 
@@ -966,7 +966,7 @@ func builtinCommand(state *shellState, args []string, stdin, stdout *os.File) in
 }
 
 // builtinType reports how each name would be interpreted as a command.
-func builtinType(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinType(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		return 0
 	}
@@ -982,7 +982,7 @@ func builtinType(state *shellState, args []string, stdin, stdout *os.File) int {
 		} else if path, err := exec.LookPath(name); err == nil {
 			fmt.Fprintf(stdout, "%s is %s\n", name, path)
 		} else {
-			fmt.Fprintf(os.Stderr, "gosh: type: %s: not found\n", name)
+			fmt.Fprintf(stderr, "gosh: type: %s: not found\n", name)
 			status = 1
 		}
 	}
@@ -999,7 +999,7 @@ func builtinType(state *shellState, args []string, stdin, stdout *os.File) int {
 //	set -eu                 combined short flags
 //	set -- arg1 arg2        set positional parameters
 //	set -o                  list all options
-func builtinSet(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinSet(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		return 0
 	}
@@ -1027,7 +1027,7 @@ func builtinSet(state *shellState, args []string, stdin, stdout *os.File) int {
 			optName := args[i]
 			i++
 			if !setOption(state, optName, enable) {
-				fmt.Fprintf(os.Stderr, "gosh: set: %s: invalid option name\n", optName)
+				fmt.Fprintf(stderr, "gosh: set: %s: invalid option name\n", optName)
 				return 1
 			}
 			continue
@@ -1038,7 +1038,7 @@ func builtinSet(state *shellState, args []string, stdin, stdout *os.File) int {
 			for _, ch := range arg[1:] {
 				name := shortToOption(ch)
 				if name == "" {
-					fmt.Fprintf(os.Stderr, "gosh: set: -%c: invalid option\n", ch)
+					fmt.Fprintf(stderr, "gosh: set: -%c: invalid option\n", ch)
 					return 1
 				}
 				setOption(state, name, enable)
@@ -1117,7 +1117,7 @@ func parseJobSpec(args []string) (int, error) {
 }
 
 // builtinJobs lists all active jobs.
-func builtinJobs(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinJobs(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	state.reapJobs()
 	for _, j := range state.jobs {
 		fmt.Fprintf(stdout, "[%d]+  %-24s%s\n", j.id, j.state, j.cmd)
@@ -1126,10 +1126,10 @@ func builtinJobs(state *shellState, args []string, stdin, stdout *os.File) int {
 }
 
 // builtinFg brings a job to the foreground.
-func builtinFg(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinFg(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	id, err := parseJobSpec(args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: fg: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: fg: %v\n", err)
 		return 1
 	}
 
@@ -1141,14 +1141,14 @@ func builtinFg(state *shellState, args []string, stdin, stdout *os.File) int {
 	}
 	if j == nil {
 		if id < 0 {
-			fmt.Fprintln(os.Stderr, "gosh: fg: no current job")
+			fmt.Fprintln(stderr, "gosh: fg: no current job")
 		} else {
-			fmt.Fprintf(os.Stderr, "gosh: fg: %%%d: no such job\n", id)
+			fmt.Fprintf(stderr, "gosh: fg: %%%d: no such job\n", id)
 		}
 		return 1
 	}
 
-	fmt.Fprintf(os.Stderr, "%s\n", j.cmd)
+	fmt.Fprintf(stderr, "%s\n", j.cmd)
 
 	// Give the job the terminal and send SIGCONT.
 	if state.interactive {
@@ -1180,7 +1180,7 @@ func builtinFg(state *shellState, args []string, stdin, stdout *os.File) int {
 
 	if lastResult.stopped {
 		j.state = jobStopped
-		fmt.Fprintf(os.Stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
+		fmt.Fprintf(stderr, "[%d]+  Stopped                 %s\n", j.id, j.cmd)
 	} else {
 		state.removeJob(j.id)
 	}
@@ -1190,10 +1190,10 @@ func builtinFg(state *shellState, args []string, stdin, stdout *os.File) int {
 }
 
 // builtinBg resumes a stopped job in the background.
-func builtinBg(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinBg(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	id, err := parseJobSpec(args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gosh: bg: %v\n", err)
+		fmt.Fprintf(stderr, "gosh: bg: %v\n", err)
 		return 1
 	}
 
@@ -1205,16 +1205,16 @@ func builtinBg(state *shellState, args []string, stdin, stdout *os.File) int {
 	}
 	if j == nil {
 		if id < 0 {
-			fmt.Fprintln(os.Stderr, "gosh: bg: no current job")
+			fmt.Fprintln(stderr, "gosh: bg: no current job")
 		} else {
-			fmt.Fprintf(os.Stderr, "gosh: bg: %%%d: no such job\n", id)
+			fmt.Fprintf(stderr, "gosh: bg: %%%d: no such job\n", id)
 		}
 		return 1
 	}
 
 	syscall.Kill(-j.pgid, syscall.SIGCONT)
 	j.state = jobRunning
-	fmt.Fprintf(os.Stderr, "[%d]+ %s &\n", j.id, j.cmd)
+	fmt.Fprintf(stderr, "[%d]+ %s &\n", j.id, j.cmd)
 	return 0
 }
 
@@ -1223,7 +1223,7 @@ func builtinBg(state *shellState, args []string, stdin, stdout *os.File) int {
 //	wait         — wait for all background jobs
 //	wait %N      — wait for job N
 //	wait PID ... — wait for specific PIDs
-func builtinWait(state *shellState, args []string, stdin, stdout *os.File) int {
+func builtinWait(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		// Wait for all background jobs.
 		lastStatus := 0
@@ -1245,12 +1245,12 @@ func builtinWait(state *shellState, args []string, stdin, stdout *os.File) int {
 			// Job spec.
 			id, err := parseJobSpec([]string{arg})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "gosh: wait: %v\n", err)
+				fmt.Fprintf(stderr, "gosh: wait: %v\n", err)
 				return 127
 			}
 			j := state.findJob(id)
 			if j == nil {
-				fmt.Fprintf(os.Stderr, "gosh: wait: %%%d: no such job\n", id)
+				fmt.Fprintf(stderr, "gosh: wait: %%%d: no such job\n", id)
 				return 127
 			}
 			lastStatus = waitJob(state, j)
@@ -1258,7 +1258,7 @@ func builtinWait(state *shellState, args []string, stdin, stdout *os.File) int {
 			// PID.
 			pid, err := strconv.Atoi(arg)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "gosh: wait: %s: not a pid or valid job spec\n", arg)
+				fmt.Fprintf(stderr, "gosh: wait: %s: not a pid or valid job spec\n", arg)
 				return 127
 			}
 			// Check if this PID belongs to a known job.
@@ -1280,7 +1280,7 @@ func builtinWait(state *shellState, args []string, stdin, stdout *os.File) int {
 				var ws syscall.WaitStatus
 				_, err := syscall.Wait4(pid, &ws, 0, nil)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "gosh: wait: pid %d is not a child of this shell\n", pid)
+					fmt.Fprintf(stderr, "gosh: wait: pid %d is not a child of this shell\n", pid)
 					return 127
 				}
 				if ws.Signaled() {

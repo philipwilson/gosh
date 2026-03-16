@@ -15,7 +15,7 @@ func captureBuiltin(t *testing.T, fn builtinFunc, state *shellState, args []stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	status := fn(state, args, os.Stdin, w)
+	status := fn(state, args, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -35,7 +35,7 @@ func TestBuiltinEchoBasic(t *testing.T) {
 func TestBuiltinEchoN(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
-	builtinEcho(s, []string{"-n", "hi"}, os.Stdin, w)
+	builtinEcho(s, []string{"-n", "hi"}, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -47,7 +47,7 @@ func TestBuiltinEchoN(t *testing.T) {
 func TestBuiltinEchoEmpty(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
-	builtinEcho(s, nil, os.Stdin, w)
+	builtinEcho(s, nil, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -68,7 +68,7 @@ func TestBuiltinCdAndPwd(t *testing.T) {
 	orig, _ := os.Getwd()
 	defer os.Chdir(orig)
 
-	st := builtinCd(s, []string{tmp}, os.Stdin, os.Stdout)
+	st := builtinCd(s, []string{tmp}, os.Stdin, os.Stdout, os.Stderr)
 	if st != 0 {
 		t.Fatalf("cd %s: status %d", tmp, st)
 	}
@@ -86,7 +86,7 @@ func TestBuiltinCdHome(t *testing.T) {
 	orig, _ := os.Getwd()
 	defer os.Chdir(orig)
 
-	st := builtinCd(s, nil, os.Stdin, os.Stdout)
+	st := builtinCd(s, nil, os.Stdin, os.Stdout, os.Stderr)
 	if st != 0 {
 		t.Fatalf("cd (home): status %d", st)
 	}
@@ -103,11 +103,11 @@ func TestBuiltinCdDash(t *testing.T) {
 	orig, _ := os.Getwd()
 	defer os.Chdir(orig)
 
-	builtinCd(s, []string{tmp1}, os.Stdin, os.Stdout)
-	builtinCd(s, []string{tmp2}, os.Stdin, os.Stdout)
+	builtinCd(s, []string{tmp1}, os.Stdin, os.Stdout, os.Stderr)
+	builtinCd(s, []string{tmp2}, os.Stdin, os.Stdout, os.Stderr)
 
 	r, w, _ := os.Pipe()
-	builtinCd(s, []string{"-"}, os.Stdin, w)
+	builtinCd(s, []string{"-"}, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -124,7 +124,7 @@ func TestBuiltinCdDash(t *testing.T) {
 
 func TestBuiltinCdNonexistent(t *testing.T) {
 	s := testState(t)
-	st := builtinCd(s, []string{"/no/such/dir"}, os.Stdin, os.Stdout)
+	st := builtinCd(s, []string{"/no/such/dir"}, os.Stdin, os.Stdout, os.Stderr)
 	if st != 1 {
 		t.Errorf("cd nonexistent: status %d, want 1", st)
 	}
@@ -134,7 +134,7 @@ func TestBuiltinCdNonexistent(t *testing.T) {
 
 func TestBuiltinExportSetAndMark(t *testing.T) {
 	s := testState(t)
-	builtinExport(s, []string{"FOO=bar"}, os.Stdin, os.Stdout)
+	builtinExport(s, []string{"FOO=bar"}, os.Stdin, os.Stdout, os.Stderr)
 	assertVar(t, s, "FOO", "bar")
 	if !s.exported["FOO"] {
 		t.Error("FOO should be exported")
@@ -144,7 +144,7 @@ func TestBuiltinExportSetAndMark(t *testing.T) {
 func TestBuiltinExportMarkOnly(t *testing.T) {
 	s := testState(t)
 	s.setVar("X", "val")
-	builtinExport(s, []string{"X"}, os.Stdin, os.Stdout)
+	builtinExport(s, []string{"X"}, os.Stdin, os.Stdout, os.Stderr)
 	if !s.exported["X"] {
 		t.Error("X should be exported")
 	}
@@ -165,7 +165,7 @@ func TestBuiltinExportList(t *testing.T) {
 func TestBuiltinUnsetScalar(t *testing.T) {
 	s := testState(t)
 	s.setVar("X", "1")
-	builtinUnset(s, []string{"X"}, os.Stdin, os.Stdout)
+	builtinUnset(s, []string{"X"}, os.Stdin, os.Stdout, os.Stderr)
 	assertVar(t, s, "X", "")
 }
 
@@ -176,7 +176,7 @@ func TestBuiltinReadReply(t *testing.T) {
 	r, w, _ := os.Pipe()
 	w.WriteString("hello world\n")
 	w.Close()
-	st := builtinRead(s, nil, r, os.Stdout)
+	st := builtinRead(s, nil, r, os.Stdout, os.Stderr)
 	r.Close()
 	if st != 0 {
 		t.Fatalf("read status = %d", st)
@@ -189,7 +189,7 @@ func TestBuiltinReadMultiVar(t *testing.T) {
 	r, w, _ := os.Pipe()
 	w.WriteString("a b c d\n")
 	w.Close()
-	builtinRead(s, []string{"x", "y"}, r, os.Stdout)
+	builtinRead(s, []string{"x", "y"}, r, os.Stdout, os.Stderr)
 	r.Close()
 	assertVar(t, s, "x", "a")
 	assertVar(t, s, "y", "b c d")
@@ -199,7 +199,7 @@ func TestBuiltinReadEOF(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
 	w.Close()
-	st := builtinRead(s, nil, r, os.Stdout)
+	st := builtinRead(s, nil, r, os.Stdout, os.Stderr)
 	r.Close()
 	if st != 1 {
 		t.Errorf("read on EOF: status %d, want 1", st)
@@ -211,7 +211,7 @@ func TestBuiltinReadRaw(t *testing.T) {
 	r, w, _ := os.Pipe()
 	w.WriteString("hello\\nworld\n")
 	w.Close()
-	builtinRead(s, []string{"-r", "line"}, r, os.Stdout)
+	builtinRead(s, []string{"-r", "line"}, r, os.Stdout, os.Stderr)
 	r.Close()
 	// Raw mode: backslash is literal.
 	assertVar(t, s, "line", "hello\\nworld")
@@ -222,7 +222,7 @@ func TestBuiltinReadArray(t *testing.T) {
 	r, w, _ := os.Pipe()
 	w.WriteString("a b c\n")
 	w.Close()
-	builtinRead(s, []string{"-a", "arr"}, r, os.Stdout)
+	builtinRead(s, []string{"-a", "arr"}, r, os.Stdout, os.Stderr)
 	r.Close()
 	assertVar(t, s, "arr[0]", "a")
 	assertVar(t, s, "arr[1]", "b")
@@ -258,7 +258,7 @@ func TestBuiltinPrintfHex(t *testing.T) {
 func TestBuiltinPrintfEscapes(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
-	builtinPrintf(s, []string{"a\\nb\\t"}, os.Stdin, w)
+	builtinPrintf(s, []string{"a\\nb\\t"}, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -270,7 +270,7 @@ func TestBuiltinPrintfEscapes(t *testing.T) {
 func TestBuiltinPrintfOctalEscape(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
-	builtinPrintf(s, []string{"\\0101"}, os.Stdin, w)
+	builtinPrintf(s, []string{"\\0101"}, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -282,7 +282,7 @@ func TestBuiltinPrintfOctalEscape(t *testing.T) {
 func TestBuiltinPrintfHexEscape(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
-	builtinPrintf(s, []string{"\\x41"}, os.Stdin, w)
+	builtinPrintf(s, []string{"\\x41"}, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -294,7 +294,7 @@ func TestBuiltinPrintfHexEscape(t *testing.T) {
 func TestBuiltinPrintfReuse(t *testing.T) {
 	s := testState(t)
 	r, w, _ := os.Pipe()
-	builtinPrintf(s, []string{"%s ", "a", "b", "c"}, os.Stdin, w)
+	builtinPrintf(s, []string{"%s ", "a", "b", "c"}, os.Stdin, w, os.Stderr)
 	w.Close()
 	out, _ := io.ReadAll(r)
 	r.Close()
@@ -316,7 +316,7 @@ func TestBuiltinPrintfPercent(t *testing.T) {
 func TestBuiltinShiftDefault(t *testing.T) {
 	s := testState(t)
 	s.positionalParams = []string{"a", "b", "c"}
-	st := builtinShift(s, nil, os.Stdin, os.Stdout)
+	st := builtinShift(s, nil, os.Stdin, os.Stdout, os.Stderr)
 	if st != 0 {
 		t.Fatalf("shift status = %d", st)
 	}
@@ -327,7 +327,7 @@ func TestBuiltinShiftDefault(t *testing.T) {
 func TestBuiltinShiftN(t *testing.T) {
 	s := testState(t)
 	s.positionalParams = []string{"a", "b", "c", "d"}
-	builtinShift(s, []string{"2"}, os.Stdin, os.Stdout)
+	builtinShift(s, []string{"2"}, os.Stdin, os.Stdout, os.Stderr)
 	assertVar(t, s, "1", "c")
 	assertVar(t, s, "#", "2")
 }
@@ -335,7 +335,7 @@ func TestBuiltinShiftN(t *testing.T) {
 func TestBuiltinShiftOutOfRange(t *testing.T) {
 	s := testState(t)
 	s.positionalParams = []string{"a"}
-	st := builtinShift(s, []string{"5"}, os.Stdin, os.Stdout)
+	st := builtinShift(s, []string{"5"}, os.Stdin, os.Stdout, os.Stderr)
 	if st != 1 {
 		t.Errorf("shift out of range: status %d, want 1", st)
 	}
@@ -345,7 +345,7 @@ func TestBuiltinShiftOutOfRange(t *testing.T) {
 
 func TestBuiltinLocalOutsideFunc(t *testing.T) {
 	s := testState(t)
-	st := builtinLocal(s, []string{"x"}, os.Stdin, os.Stdout)
+	st := builtinLocal(s, []string{"x"}, os.Stdin, os.Stdout, os.Stderr)
 	if st != 1 {
 		t.Errorf("local outside func: status %d, want 1", st)
 	}
@@ -356,7 +356,7 @@ func TestBuiltinLocalInsideFunc(t *testing.T) {
 	// Simulate being inside a function by pushing a scope.
 	s.localScopes = append(s.localScopes, make(map[string]savedVar))
 	s.setVar("x", "outer")
-	builtinLocal(s, []string{"x=inner"}, os.Stdin, os.Stdout)
+	builtinLocal(s, []string{"x=inner"}, os.Stdin, os.Stdout, os.Stderr)
 	assertVar(t, s, "x", "inner")
 	// Restore scope.
 	scope := s.localScopes[len(s.localScopes)-1]
@@ -369,7 +369,7 @@ func TestBuiltinLocalInsideFunc(t *testing.T) {
 
 func TestBuiltinAliasDefine(t *testing.T) {
 	s := testState(t)
-	builtinAlias(s, []string{"ll=ls -la"}, os.Stdin, os.Stdout)
+	builtinAlias(s, []string{"ll=ls -la"}, os.Stdin, os.Stdout, os.Stderr)
 	if s.aliases["ll"] != "ls -la" {
 		t.Errorf("alias ll = %q", s.aliases["ll"])
 	}
@@ -387,7 +387,7 @@ func TestBuiltinAliasList(t *testing.T) {
 func TestBuiltinUnalias(t *testing.T) {
 	s := testState(t)
 	s.aliases["g"] = "git"
-	builtinUnalias(s, []string{"g"}, os.Stdin, os.Stdout)
+	builtinUnalias(s, []string{"g"}, os.Stdin, os.Stdout, os.Stderr)
 	if _, ok := s.aliases["g"]; ok {
 		t.Error("unalias should remove g")
 	}
@@ -397,7 +397,7 @@ func TestBuiltinUnaliasAll(t *testing.T) {
 	s := testState(t)
 	s.aliases["a"] = "x"
 	s.aliases["b"] = "y"
-	builtinUnalias(s, []string{"-a"}, os.Stdin, os.Stdout)
+	builtinUnalias(s, []string{"-a"}, os.Stdin, os.Stdout, os.Stderr)
 	if len(s.aliases) != 0 {
 		t.Errorf("unalias -a: still %d aliases", len(s.aliases))
 	}
@@ -433,7 +433,7 @@ func TestBuiltinSource(t *testing.T) {
 	tmp := t.TempDir()
 	f := filepath.Join(tmp, "test.sh")
 	os.WriteFile(f, []byte("X=from_source\n"), 0644)
-	builtinSource(s, []string{f}, os.Stdin, os.Stdout)
+	builtinSource(s, []string{f}, os.Stdin, os.Stdout, os.Stderr)
 	assertVar(t, s, "X", "from_source")
 }
 
@@ -441,7 +441,7 @@ func TestBuiltinSource(t *testing.T) {
 
 func TestBuiltinTrue(t *testing.T) {
 	s := testState(t)
-	st := builtinTrue(s, nil, os.Stdin, os.Stdout)
+	st := builtinTrue(s, nil, os.Stdin, os.Stdout, os.Stderr)
 	if st != 0 {
 		t.Errorf("true status = %d", st)
 	}
@@ -449,7 +449,7 @@ func TestBuiltinTrue(t *testing.T) {
 
 func TestBuiltinFalse(t *testing.T) {
 	s := testState(t)
-	st := builtinFalse(s, nil, os.Stdin, os.Stdout)
+	st := builtinFalse(s, nil, os.Stdin, os.Stdout, os.Stderr)
 	if st != 1 {
 		t.Errorf("false status = %d", st)
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
@@ -48,6 +49,7 @@ var builtins = map[string]builtinFunc{
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
 	"history":         builtinHistory,
+	"set":             builtinSet,
 }
 
 // builtinCd changes the shell's working directory.
@@ -757,6 +759,8 @@ func init() {
 	builtins["."] = builtinSource
 	builtins["eval"] = builtinEval
 	builtins["trap"] = builtinTrap
+	builtins["command"] = builtinCommand
+	builtins["type"] = builtinType
 }
 
 // builtinSource reads and executes a file in the current shell.
@@ -835,6 +839,225 @@ func builtinTrap(state *shellState, args []string, stdin, stdout *os.File) int {
 	}
 
 	return 0
+}
+
+// builtinCommand implements the command builtin.
+//
+//	command name args...    — run name, skipping function lookup
+//	command -v name         — print how name would be resolved
+//	command -V name         — verbose: describe how name would be resolved
+func builtinCommand(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		return 0
+	}
+
+	// Parse flags.
+	switch args[0] {
+	case "-v":
+		status := 0
+		for _, name := range args[1:] {
+			if _, ok := builtins[name]; ok {
+				fmt.Fprintln(stdout, name)
+			} else if path, err := exec.LookPath(name); err == nil {
+				fmt.Fprintln(stdout, path)
+			} else {
+				status = 1
+			}
+		}
+		return status
+
+	case "-V":
+		status := 0
+		for _, name := range args[1:] {
+			if _, ok := builtins[name]; ok {
+				fmt.Fprintf(stdout, "%s is a shell builtin\n", name)
+			} else if path, err := exec.LookPath(name); err == nil {
+				fmt.Fprintf(stdout, "%s is %s\n", name, path)
+			} else {
+				fmt.Fprintf(os.Stderr, "gosh: command: %s: not found\n", name)
+				status = 1
+			}
+		}
+		return status
+	}
+
+	// command name args... — run name, skipping function lookup.
+	name := args[0]
+	cmdArgs := args[1:]
+
+	// Check builtins first.
+	if fn, ok := builtins[name]; ok {
+		return fn(state, cmdArgs, stdin, stdout)
+	}
+
+	// External command lookup.
+	path, err := exec.LookPath(name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: command: %s: not found\n", name)
+		return 127
+	}
+
+	env := state.environ()
+	proc, err := os.StartProcess(path, args, &os.ProcAttr{
+		Env:   env,
+		Files: []*os.File{stdin, stdout, os.Stderr},
+		Sys: &syscall.SysProcAttr{
+			Setpgid: true,
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", name, err)
+		return 1
+	}
+
+	pgid := proc.Pid
+	syscall.Setpgid(pgid, pgid)
+
+	if state.interactive && state.substDepth == 0 {
+		tcsetpgrp(state.termFd, pgid)
+	}
+
+	res := waitProc(proc)
+
+	if state.interactive && state.substDepth == 0 {
+		tcsetpgrp(state.termFd, state.shellPgid)
+	}
+
+	return res.status
+}
+
+// builtinType reports how each name would be interpreted as a command.
+func builtinType(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		return 0
+	}
+
+	status := 0
+	for _, name := range args {
+		if _, ok := state.funcs[name]; ok {
+			fmt.Fprintf(stdout, "%s is a function\n", name)
+		} else if val, ok := state.aliases[name]; ok {
+			fmt.Fprintf(stdout, "%s is aliased to '%s'\n", name, val)
+		} else if _, ok := builtins[name]; ok {
+			fmt.Fprintf(stdout, "%s is a shell builtin\n", name)
+		} else if path, err := exec.LookPath(name); err == nil {
+			fmt.Fprintf(stdout, "%s is %s\n", name, path)
+		} else {
+			fmt.Fprintf(os.Stderr, "gosh: type: %s: not found\n", name)
+			status = 1
+		}
+	}
+	return status
+}
+
+// builtinSet implements the set builtin.
+//
+//	set -e/-o errexit       enable errexit
+//	set -u/-o nounset       enable nounset
+//	set -x/-o xtrace        enable xtrace
+//	set -o pipefail         enable pipefail
+//	set +e/+o errexit       disable errexit (etc.)
+//	set -eu                 combined short flags
+//	set -- arg1 arg2        set positional parameters
+//	set -o                  list all options
+func builtinSet(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		return 0
+	}
+
+	// set -- args... sets positional parameters.
+	for i, arg := range args {
+		if arg == "--" {
+			state.positionalParams = args[i+1:]
+			return 0
+		}
+	}
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		i++
+
+		if arg == "-o" || arg == "+o" {
+			enable := arg[0] == '-'
+			if i >= len(args) {
+				// set -o with no argument: list all options.
+				printSetOptions(state, stdout)
+				return 0
+			}
+			optName := args[i]
+			i++
+			if !setOption(state, optName, enable) {
+				fmt.Fprintf(os.Stderr, "gosh: set: %s: invalid option name\n", optName)
+				return 1
+			}
+			continue
+		}
+
+		if len(arg) >= 2 && (arg[0] == '-' || arg[0] == '+') {
+			enable := arg[0] == '-'
+			for _, ch := range arg[1:] {
+				name := shortToOption(ch)
+				if name == "" {
+					fmt.Fprintf(os.Stderr, "gosh: set: -%c: invalid option\n", ch)
+					return 1
+				}
+				setOption(state, name, enable)
+			}
+			continue
+		}
+	}
+
+	return 0
+}
+
+func shortToOption(ch rune) string {
+	switch ch {
+	case 'e':
+		return "errexit"
+	case 'u':
+		return "nounset"
+	case 'x':
+		return "xtrace"
+	default:
+		return ""
+	}
+}
+
+func setOption(state *shellState, name string, enable bool) bool {
+	switch name {
+	case "errexit":
+		state.optErrexit = enable
+	case "nounset":
+		state.optNounset = enable
+	case "xtrace":
+		state.optXtrace = enable
+	case "pipefail":
+		state.optPipefail = enable
+	default:
+		return false
+	}
+	return true
+}
+
+func printSetOptions(state *shellState, stdout *os.File) {
+	type opt struct {
+		name string
+		val  bool
+	}
+	opts := []opt{
+		{"errexit", state.optErrexit},
+		{"nounset", state.optNounset},
+		{"pipefail", state.optPipefail},
+		{"xtrace", state.optXtrace},
+	}
+	for _, o := range opts {
+		onOff := "off"
+		if o.val {
+			onOff = "on"
+		}
+		fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+	}
 }
 
 // parseJobSpec parses a job specifier like "%1" and returns the job ID.

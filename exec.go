@@ -37,10 +37,31 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 			}
 		}
 
+		// Suppress errexit for LHS of && and ||.
+		suppressErrexit := list.Entries[i].Op == "&&" || list.Entries[i].Op == "||"
+		if suppressErrexit {
+			state.noErrexit++
+		}
+
 		// Expand this entry just before execution.
 		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
 		expander.Expand(singleList, state.lookup, state.cmdSubst, state.setVar, state.lookupArray)
 		list.Entries[i] = singleList.Entries[0]
+
+		// Check for nounset error during expansion.
+		if state.nounsetError {
+			state.nounsetError = false
+			state.lastStatus = 1
+			state.runTrapWithIO("ERR", stdin, stdout)
+			if suppressErrexit {
+				state.noErrexit--
+			}
+			if state.optErrexit && state.noErrexit == 0 {
+				state.exitFlag = true
+				return
+			}
+			continue
+		}
 
 		if state.debugExpanded {
 			fmt.Fprintf(os.Stderr, "  %s\n", list.Entries[i].Pipeline)
@@ -56,6 +77,17 @@ func execList(state *shellState, list *parser.List, stdin, stdout *os.File) {
 		state.runPendingTrapsWithIO(stdin, stdout)
 		if state.lastStatus != 0 {
 			state.runTrapWithIO("ERR", stdin, stdout)
+		}
+
+		if suppressErrexit {
+			state.noErrexit--
+		}
+
+		// Errexit: exit if command failed and not suppressed.
+		// Don't fire for the LHS of && or || (suppressErrexit was true).
+		if !suppressErrexit && state.optErrexit && state.noErrexit == 0 && state.lastStatus != 0 {
+			state.exitFlag = true
+			return
 		}
 
 		if state.exitFlag || state.breakFlag || state.continueFlag || state.returnFlag {
@@ -229,6 +261,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 	}
 
 	anyStopped := false
+	var lastNonZero int
 	for i, info := range infos {
 		if info.proc == nil {
 			continue
@@ -240,8 +273,15 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 		if res.stopped {
 			anyStopped = true
 		}
+		if res.status != 0 {
+			lastNonZero = res.status
+		}
 		if i == n-1 {
-			state.lastStatus = res.status
+			if state.optPipefail && lastNonZero != 0 {
+				state.lastStatus = lastNonZero
+			} else {
+				state.lastStatus = res.status
+			}
 		}
 	}
 
@@ -320,6 +360,10 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 	}
 	savedParams := state.positionalParams
 	savedExitFlag := state.exitFlag
+	savedOptErrexit := state.optErrexit
+	savedOptNounset := state.optNounset
+	savedOptXtrace := state.optXtrace
+	savedOptPipefail := state.optPipefail
 	savedTraps := make(map[string]string, len(state.traps))
 	for k, v := range state.traps {
 		savedTraps[k] = v
@@ -338,6 +382,10 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 	state.aliases = savedAliases
 	state.positionalParams = savedParams
 	state.exitFlag = savedExitFlag
+	state.optErrexit = savedOptErrexit
+	state.optNounset = savedOptNounset
+	state.optXtrace = savedOptXtrace
+	state.optPipefail = savedOptPipefail
 	state.traps = savedTraps
 	state.lastStatus = status
 
@@ -369,7 +417,9 @@ func execArithCmd(state *shellState, cmd *parser.ArithCmd) int {
 func execIf(state *shellState, cmd *parser.IfCmd, stdin, stdout *os.File) int {
 	for _, clause := range cmd.Clauses {
 		cond := parser.CloneList(clause.Condition)
+		state.noErrexit++
 		execList(state, cond, stdin, stdout)
+		state.noErrexit--
 
 		if state.lastStatus == 0 {
 			body := parser.CloneList(clause.Body)
@@ -398,10 +448,15 @@ func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout *os.File) 
 
 	for {
 		cond := parser.CloneList(cmd.Condition)
+		state.noErrexit++
 		execList(state, cond, stdin, stdout)
+		state.noErrexit--
 
 		if state.lastStatus != 0 || state.breakFlag {
 			state.breakFlag = false
+			// A while loop that exits because its condition is false
+			// has exit status 0 (bash behavior).
+			state.lastStatus = 0
 			break
 		}
 
@@ -578,6 +633,15 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	}
 
 	args := cmd.ArgStrings()
+
+	// Xtrace: print commands before execution.
+	if state.optXtrace && len(args) > 0 {
+		ps4 := state.vars["PS4"]
+		if ps4 == "" {
+			ps4 = "+ "
+		}
+		fmt.Fprintf(os.Stderr, "%s%s\n", ps4, strings.Join(args, " "))
+	}
 
 	// Check for user-defined functions.
 	if body, ok := state.funcs[args[0]]; ok {

@@ -28,6 +28,7 @@ func testState(t *testing.T) *shellState {
 	s.vars["PATH"] = "/bin:/usr/bin"
 	s.vars["PWD"], _ = os.Getwd()
 	s.vars["USER"] = os.Getenv("USER")
+	s.vars["IFS"] = " \t\n"
 	return s
 }
 
@@ -106,4 +107,45 @@ func assertVar(t *testing.T, state *shellState, name, want string) {
 	if got != want {
 		t.Errorf("$%s = %q, want %q", name, got, want)
 	}
+}
+
+// runCaptureBoth runs a command capturing both stdout and stderr.
+func runCaptureBoth(t *testing.T, state *shellState, cmd string) (stdout, stderr string) {
+	t.Helper()
+	tokens, err := lexer.Lex(cmd)
+	if err != nil {
+		t.Fatalf("lex %q: %v", cmd, err)
+	}
+	tokens = expandAliases(state, tokens)
+
+	list, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse %q: %v", cmd, err)
+	}
+
+	// Capture stdout.
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	// Capture stderr.
+	oldStderr := os.Stderr
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = wErr
+
+	execList(state, list, os.Stdin, wOut)
+	wOut.Close()
+	wErr.Close()
+	os.Stderr = oldStderr
+
+	outBytes, _ := io.ReadAll(rOut)
+	rOut.Close()
+	errBytes, _ := io.ReadAll(rErr)
+	rErr.Close()
+
+	return strings.TrimRight(string(outBytes), "\n"), strings.TrimRight(string(errBytes), "\n")
 }

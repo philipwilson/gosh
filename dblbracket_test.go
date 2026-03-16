@@ -117,3 +117,48 @@ func TestDblBracketFalse(t *testing.T) {
 	runCapture(t, s, "[[ hello == world ]]")
 	assertStatus(t, s, 1)
 }
+
+// --- Regex matching ---
+
+func TestDblBracketRegexMatch(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, `[[ hello =~ ^hel ]]`)
+	assertStatus(t, s, 0)
+}
+
+func TestDblBracketRegexNoMatch(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, `[[ hello =~ ^world ]]`)
+	assertStatus(t, s, 1)
+}
+
+func TestDblBracketRegexDigits(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, `[[ foo123bar =~ [0-9]+ ]]`)
+	assertStatus(t, s, 0)
+}
+
+func TestDblBracketRegexEmpty(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, `[[ "" =~ ^$ ]]`)
+	assertStatus(t, s, 0)
+}
+
+func TestDblBracketRegexInConditional(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `if [[ "hello123" =~ [0-9]+ ]]; then echo matched; fi`)
+	assertOutput(t, got, "matched")
+}
+
+func TestDblBracketRegexPartialMatch(t *testing.T) {
+	s := testState(t)
+	// Partial match should work (like bash =~).
+	runCapture(t, s, `[[ foobar =~ ob ]]`)
+	assertStatus(t, s, 0)
+}
+
+func TestDblBracketRegexInvalid(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, `[[ hello =~ "[invalid" ]]`)
+	assertStatus(t, s, 2)
+}

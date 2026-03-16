@@ -51,6 +51,12 @@ type shellState struct {
 	pendingSignals   map[string]bool      // signals received, not yet handled
 	trapRunning      bool                 // prevent recursive trap execution
 	sigCh            chan os.Signal       // signal notification channel
+	optErrexit       bool                 // set -e: exit on error
+	optNounset       bool                 // set -u: error on unset variables
+	optXtrace        bool                 // set -x: print commands before execution
+	optPipefail      bool                 // set -o pipefail: pipeline fails if any command fails
+	noErrexit        int                  // >0 suppresses errexit (condition contexts, &&/|| LHS)
+	nounsetError     bool                 // set when a nounset violation occurs during expansion
 }
 
 func newShellState() *shellState {
@@ -185,7 +191,14 @@ func (s *shellState) lookup(name string) string {
 			return ""
 		}
 
-		return s.vars[name]
+		if val, ok := s.vars[name]; ok {
+			return val
+		}
+		if s.optNounset {
+			fmt.Fprintf(os.Stderr, "gosh: %s: unbound variable\n", name)
+			s.nounsetError = true
+		}
+		return ""
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"gosh/expander"
 	"gosh/lexer"
@@ -138,11 +139,10 @@ func (p *bracketParser) parseNot() (bool, error) {
 
 // parsePrimary handles unary tests, binary tests, and parentheses.
 func (p *bracketParser) parsePrimary() (bool, error) {
-	tok := p.peek()
-
-	if tok == "" {
+	if p.pos >= len(p.strs) {
 		return false, fmt.Errorf("expected expression")
 	}
+	tok := p.peek()
 
 	// Parenthesized expression.
 	if tok == "(" {
@@ -197,6 +197,10 @@ func (p *bracketParser) parsePrimary() (bool, error) {
 		p.next()
 		right := p.next()
 		return left > right, nil
+	case "=~":
+		p.next()
+		right := p.next()
+		return bracketRegexMatch(left, right)
 	case "-eq", "-ne", "-lt", "-le", "-gt", "-ge":
 		p.next()
 		right := p.next()
@@ -217,6 +221,16 @@ func bracketPatternMatch(left, right string, rightWord lexer.Word) bool {
 	}
 	// Quoted RHS: literal string comparison.
 	return left == right
+}
+
+// bracketRegexMatch performs regex matching for [[ =~ ]].
+// Returns (matched, nil) on success, or (false, error) if the regex is invalid.
+func bracketRegexMatch(left, right string) (bool, error) {
+	re, err := regexp.Compile(right)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex: %s", right)
+	}
+	return re.MatchString(left), nil
 }
 
 // isFullyUnquoted returns true if all parts of a word are unquoted.

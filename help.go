@@ -134,6 +134,45 @@ var helpEntries = map[string]builtinHelp{
     Exit Status:
     Returns 0 unless an invalid option or error occurs.`,
 	},
+	"debug-ast": {
+		Synopsis: "debug-ast [on|off]",
+		Desc: `Toggle display of the AST before execution.
+
+    When enabled, prints the parsed abstract syntax tree to
+    stderr before each command is executed. Useful for
+    understanding how the parser interprets your input.
+
+    Without arguments, toggles the current state.
+
+    Exit Status:
+    Returns 0.`,
+	},
+	"debug-expanded": {
+		Synopsis: "debug-expanded [on|off]",
+		Desc: `Toggle display of the expanded AST before execution.
+
+    When enabled, prints the AST after expansion (variable
+    substitution, globbing, word splitting, etc.) to stderr.
+    Useful for understanding how expansions transform commands.
+
+    Without arguments, toggles the current state.
+
+    Exit Status:
+    Returns 0.`,
+	},
+	"debug-tokens": {
+		Synopsis: "debug-tokens [on|off]",
+		Desc: `Toggle display of tokens during lexing.
+
+    When enabled, prints the token stream produced by the
+    lexer to stderr. Useful for understanding how input is
+    tokenized before parsing.
+
+    Without arguments, toggles the current state.
+
+    Exit Status:
+    Returns 0.`,
+	},
 	"disown": {
 		Synopsis: "disown [-a] [%jobspec ...]",
 		Desc: `Remove jobs from the job table.
@@ -501,6 +540,9 @@ Options:
   -c command       Execute command string and exit
   -h, --help       Show this help message and exit
   --version        Show version information and exit
+  --debug-ast      Print the AST before execution
+  --debug-tokens   Print the token stream during lexing
+  --debug-expanded Print the expanded AST before execution
 
 Arguments:
   script           Script file to execute

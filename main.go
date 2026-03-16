@@ -14,29 +14,47 @@ import (
 )
 
 func main() {
-	if len(os.Args) == 2 {
-		switch os.Args[1] {
+	// Parse command-line flags.
+	var debugAST, debugTokens, debugExpanded bool
+	args := os.Args[1:]
+	for len(args) > 0 {
+		switch args[0] {
 		case "--version":
 			printVersion(os.Stdout)
 			return
 		case "-h", "--help":
 			printUsage(os.Stdout)
 			return
+		case "--debug-ast":
+			debugAST = true
+			args = args[1:]
+		case "--debug-tokens":
+			debugTokens = true
+			args = args[1:]
+		case "--debug-expanded":
+			debugExpanded = true
+			args = args[1:]
+		default:
+			goto doneFlags
 		}
 	}
+doneFlags:
 
 	state := newShellState()
+	state.debugAST = debugAST
+	state.debugTokens = debugTokens
+	state.debugExpanded = debugExpanded
 
-	// gosh -c 'command' [arg0 [args...]]
-	if len(os.Args) >= 2 && os.Args[1] == "-c" {
-		if len(os.Args) < 3 {
+	// gosh [flags] -c 'command' [arg0 [args...]]
+	if len(args) >= 1 && args[0] == "-c" {
+		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "gosh: -c: option requires an argument")
 			os.Exit(2)
 		}
-		cmdStr := os.Args[2]
-		if len(os.Args) > 3 {
-			state.vars["0"] = os.Args[3]
-			state.positionalParams = os.Args[4:]
+		cmdStr := args[1]
+		if len(args) > 2 {
+			state.vars["0"] = args[2]
+			state.positionalParams = args[3:]
 		}
 		runLine(state, cmdStr)
 		state.runTrap("EXIT")
@@ -44,8 +62,8 @@ func main() {
 	}
 
 	// If a script file is given as an argument, run it.
-	if len(os.Args) >= 2 {
-		status := runScript(state, os.Args[1])
+	if len(args) >= 1 {
+		status := runScript(state, args[0])
 		state.runTrap("EXIT")
 		os.Exit(status)
 	}

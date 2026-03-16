@@ -663,6 +663,13 @@ func runScript(state *shellState, path string) int {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: %s: %v\n", path, err)
+		if state.lastStatus == 0 {
+			state.lastStatus = 1
+		}
+	}
+
 	return state.lastStatus
 }
 
@@ -788,6 +795,10 @@ func runNonInteractive(state *shellState) {
 		if runTokens(state, tokens) {
 			break
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: read error: %v\n", err)
 	}
 }
 

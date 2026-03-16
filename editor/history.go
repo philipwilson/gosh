@@ -74,6 +74,9 @@ func (h *History) load() {
 			h.entries = append(h.entries, line)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return // silently discard partial history on error
+	}
 	if len(h.entries) > maxHistory {
 		h.entries = h.entries[len(h.entries)-maxHistory:]
 	}

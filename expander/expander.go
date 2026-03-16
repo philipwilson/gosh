@@ -3,6 +3,7 @@
 //
 // Expansion phases (in order):
 //
+//  0. Brace expansion: {a,b,c}, {1..5}, {a..e} on args only
 //  1. Tilde expansion: ~ → $HOME, ~user → user's home dir
 //  2. Command substitution: $(cmd) and `cmd` → output of cmd
 //  3. Variable expansion: $VAR, ${VAR}, $?, $$
@@ -93,6 +94,9 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, s
 }
 
 func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
+	// Phase 0: brace expansion on args only.
+	cmd.Args = expandBracesInArgs(cmd.Args)
+
 	// Phase 1: tilde expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandTilde(cmd.Assigns[i].Value, lookup)

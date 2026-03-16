@@ -778,6 +778,122 @@ func TestSubstringEmpty(t *testing.T) {
 	expectArgs(t, list, 0, "echo")
 }
 
+// --- Brace expansion tests ---
+
+func TestBraceCommaBasic(t *testing.T) {
+	list := mustParse(t, "echo {a,b,c}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "a", "b", "c")
+}
+
+func TestBracePrefixSuffix(t *testing.T) {
+	list := mustParse(t, "echo pre{a,b}suf")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "preasuf", "prebsuf")
+}
+
+func TestBraceNested(t *testing.T) {
+	list := mustParse(t, "echo {a,{b,c}}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "a", "b", "c")
+}
+
+func TestBraceCartesian(t *testing.T) {
+	list := mustParse(t, "echo {a,b}{1,2}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "a1", "a2", "b1", "b2")
+}
+
+func TestBraceEmptyAlt(t *testing.T) {
+	list := mustParse(t, "echo pre{a,}suf")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "preasuf", "presuf")
+}
+
+func TestBraceIntSequence(t *testing.T) {
+	list := mustParse(t, "echo {1..5}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "1", "2", "3", "4", "5")
+}
+
+func TestBraceReverseInt(t *testing.T) {
+	list := mustParse(t, "echo {5..1}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "5", "4", "3", "2", "1")
+}
+
+func TestBraceZeroPadded(t *testing.T) {
+	list := mustParse(t, "echo {01..03}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "01", "02", "03")
+}
+
+func TestBraceLetterSequence(t *testing.T) {
+	list := mustParse(t, "echo {a..e}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "a", "b", "c", "d", "e")
+}
+
+func TestBraceReverseLetterSequence(t *testing.T) {
+	list := mustParse(t, "echo {e..a}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "e", "d", "c", "b", "a")
+}
+
+func TestBraceNegativeSequence(t *testing.T) {
+	list := mustParse(t, "echo {-2..2}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "-2", "-1", "0", "1", "2")
+}
+
+func TestBraceSequenceWithPrefixSuffix(t *testing.T) {
+	list := mustParse(t, "echo file{1..3}.txt")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "file1.txt", "file2.txt", "file3.txt")
+}
+
+func TestBraceSingleElemLiteral(t *testing.T) {
+	list := mustParse(t, "echo {a}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "{a}")
+}
+
+func TestBraceEmptyLiteral(t *testing.T) {
+	list := mustParse(t, "echo {}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "{}")
+}
+
+func TestBraceDoubleQuoted(t *testing.T) {
+	list := mustParse(t, `echo "{a,b}"`)
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "{a,b}")
+}
+
+func TestBraceSingleQuoted(t *testing.T) {
+	list := mustParse(t, "echo '{a,b}'")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "{a,b}")
+}
+
+func TestBraceEscaped(t *testing.T) {
+	list := mustParse(t, `echo \{a,b\}`)
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "{a,b}")
+}
+
+func TestBraceVarNotConfused(t *testing.T) {
+	list := mustParse(t, "echo ${HOME}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "/home/user")
+}
+
+func TestBraceBeforeVars(t *testing.T) {
+	list := mustParse(t, "echo {$HOME,world}")
+	Expand(list, testLookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "/home/user", "world")
+}
+
 func simpleCmd(t *testing.T, cmd parser.Command) *parser.SimpleCmd {
 	t.Helper()
 	sc, ok := cmd.(*parser.SimpleCmd)

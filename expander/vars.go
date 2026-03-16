@@ -418,6 +418,18 @@ func expandParam(content string, lookup LookupFunc) string {
 		}
 	}
 
+	// ${!var} — indirect expansion.
+	if len(content) > 1 && content[0] == '!' {
+		rest := content[1:]
+		if isValidVarRef(rest) {
+			intermediate := lookup(rest)
+			if intermediate == "" {
+				return ""
+			}
+			return lookup(intermediate)
+		}
+	}
+
 	name, op, word := parseParamOp(content)
 
 	// Evaluate arithmetic subscripts in array references.

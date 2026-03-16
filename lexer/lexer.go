@@ -95,6 +95,8 @@ const (
 	TOKEN_LPAREN                 // ( (function definition)
 	TOKEN_RPAREN                 // ) (case pattern terminator)
 	TOKEN_ARITH_CMD              // (( expr )) — arithmetic command
+	TOKEN_AND_GT                 // &> (redirect stdout+stderr)
+	TOKEN_AND_APPEND             // &>> (append stdout+stderr)
 	TOKEN_EOF                    // end of input
 )
 
@@ -132,6 +134,10 @@ func (t TokenType) String() string {
 		return "RPAREN"
 	case TOKEN_ARITH_CMD:
 		return "ARITH_CMD"
+	case TOKEN_AND_GT:
+		return "AND_GT"
+	case TOKEN_AND_APPEND:
+		return "AND_APPEND"
 	case TOKEN_EOF:
 		return "EOF"
 	default:
@@ -244,7 +250,8 @@ func (l *lexer) lex() ([]Token, error) {
 			last := tokens[len(tokens)-1].Type
 			if last == TOKEN_SEMI || last == TOKEN_PIPE || last == TOKEN_AND ||
 				last == TOKEN_OR || last == TOKEN_AMP || last == TOKEN_DSEMI ||
-				last == TOKEN_LPAREN || last == TOKEN_HEREDOC {
+				last == TOKEN_LPAREN || last == TOKEN_HEREDOC ||
+				last == TOKEN_AND_GT || last == TOKEN_AND_APPEND {
 				continue
 			}
 			tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
@@ -263,6 +270,14 @@ func (l *lexer) lex() ([]Token, error) {
 			if c, ok := l.peek(); ok && c == '&' {
 				l.next()
 				tokens = append(tokens, Token{Type: TOKEN_AND, Fd: -1})
+			} else if c, ok := l.peek(); ok && c == '>' {
+				l.next()
+				if c2, ok2 := l.peek(); ok2 && c2 == '>' {
+					l.next()
+					tokens = append(tokens, Token{Type: TOKEN_AND_APPEND, Fd: -1})
+				} else {
+					tokens = append(tokens, Token{Type: TOKEN_AND_GT, Fd: -1})
+				}
 			} else {
 				tokens = append(tokens, Token{Type: TOKEN_AMP, Fd: -1})
 			}

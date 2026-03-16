@@ -437,6 +437,47 @@ func TestBuiltinSource(t *testing.T) {
 	assertVar(t, s, "X", "from_source")
 }
 
+// --- read -p ---
+
+func TestBuiltinReadPrompt(t *testing.T) {
+	s := testState(t)
+	// Provide stdin with "hello\n".
+	rIn, wIn, _ := os.Pipe()
+	wIn.WriteString("hello\n")
+	wIn.Close()
+
+	// Capture stderr to verify the prompt is printed there.
+	rErr, wErr, _ := os.Pipe()
+
+	builtinRead(s, []string{"-p", "Name: ", "x"}, rIn, os.Stdout, wErr)
+	wErr.Close()
+	rIn.Close()
+
+	errOut, _ := io.ReadAll(rErr)
+	rErr.Close()
+	if string(errOut) != "Name: " {
+		t.Errorf("read -p prompt: got %q, want %q", string(errOut), "Name: ")
+	}
+	if s.vars["x"] != "hello" {
+		t.Errorf("read -p value: got %q, want %q", s.vars["x"], "hello")
+	}
+}
+
+func TestBuiltinReadPromptMissingArg(t *testing.T) {
+	s := testState(t)
+	rErr, wErr, _ := os.Pipe()
+	st := builtinRead(s, []string{"-p"}, os.Stdin, os.Stdout, wErr)
+	wErr.Close()
+	errOut, _ := io.ReadAll(rErr)
+	rErr.Close()
+	if st != 1 {
+		t.Errorf("read -p (no arg) status = %d, want 1", st)
+	}
+	if !strings.Contains(string(errOut), "option requires an argument") {
+		t.Errorf("read -p (no arg) stderr = %q, want error message", string(errOut))
+	}
+}
+
 // --- true/false ---
 
 func TestBuiltinTrue(t *testing.T) {

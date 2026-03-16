@@ -366,10 +366,12 @@ func builtinUnset(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 func builtinRead(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	raw := false
 	readArray := false
+	var prompt string
 	varNames := args
 
 	// Parse flags.
-	for len(varNames) > 0 && strings.HasPrefix(varNames[0], "-") {
+	done := false
+	for len(varNames) > 0 && strings.HasPrefix(varNames[0], "-") && !done {
 		switch varNames[0] {
 		case "-r":
 			raw = true
@@ -377,9 +379,21 @@ func builtinRead(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 		case "-a":
 			readArray = true
 			varNames = varNames[1:]
+		case "-p":
+			varNames = varNames[1:]
+			if len(varNames) == 0 {
+				fmt.Fprintln(stderr, "gosh: read: -p: option requires an argument")
+				return 1
+			}
+			prompt = varNames[0]
+			varNames = varNames[1:]
 		default:
-			break
+			done = true
 		}
+	}
+
+	if prompt != "" {
+		fmt.Fprint(stderr, prompt)
 	}
 
 	// Read one line from stdin, one byte at a time to avoid buffering.

@@ -173,6 +173,11 @@ func (p *bracketParser) parsePrimary() (bool, error) {
 		p.next()
 		arg := p.next()
 		return arg != "", nil
+	case "-v":
+		p.next()
+		w := p.nextWord()
+		varName := w.String()
+		return p.state.isVarSet(varName), nil
 	}
 
 	// Read the left operand.

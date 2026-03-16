@@ -928,3 +928,69 @@ func TestFunctionStderrRedirect(t *testing.T) {
 	got, _ := runCaptureBoth(t, s, `f() { echo err >&2; }; f 2>&1`)
 	assertOutput(t, got, "err")
 }
+
+// --- [[ -v var ]] ---
+
+func TestDblBracketVarSetScalar(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=hello; [[ -v X ]] && echo yes || echo no`)
+	assertOutput(t, got, "yes")
+}
+
+func TestDblBracketVarUnset(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `unset X; [[ -v X ]] && echo yes || echo no`)
+	assertOutput(t, got, "no")
+}
+
+func TestDblBracketVarEmpty(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=""; [[ -v X ]] && echo yes || echo no`)
+	assertOutput(t, got, "yes")
+}
+
+func TestDblBracketVarArray(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `arr=(a b); [[ -v arr ]] && echo yes || echo no`)
+	assertOutput(t, got, "yes")
+}
+
+// --- ${!var} indirect expansion ---
+
+func TestIndirectExpansion(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `REF=X; X=42; echo ${!REF}`)
+	assertOutput(t, got, "42")
+}
+
+func TestIndirectExpansionUnset(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `echo "x${!UNSET}y"`)
+	assertOutput(t, got, "xy")
+}
+
+// --- &> and &>> redirects ---
+
+func TestAndGtRedirect(t *testing.T) {
+	s := testState(t)
+	tmp := t.TempDir()
+	got := runCapture(t, s, `echo hello &>`+tmp+`/out; cat `+tmp+`/out`)
+	assertOutput(t, got, "hello")
+}
+
+func TestAndGtCapturesBothStreams(t *testing.T) {
+	s := testState(t)
+	tmp := t.TempDir()
+	got := runCapture(t, s, `(echo out; echo err >&2) &>`+tmp+`/out; cat `+tmp+`/out`)
+	// Both stdout and stderr should be in the file.
+	if !strings.Contains(got, "out") || !strings.Contains(got, "err") {
+		t.Errorf("&> should capture both streams, got %q", got)
+	}
+}
+
+func TestAndAppendRedirect(t *testing.T) {
+	s := testState(t)
+	tmp := t.TempDir()
+	got := runCapture(t, s, `echo hello &>>`+tmp+`/out; echo world &>>`+tmp+`/out; cat `+tmp+`/out`)
+	assertOutput(t, got, "hello\nworld")
+}

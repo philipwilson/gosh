@@ -222,6 +222,27 @@ func (s *shellState) lookup(name string) string {
 	}
 }
 
+// isVarSet returns true if the named variable exists in the shell state.
+// Used by [[ -v var ]] to test whether a variable is set.
+func (s *shellState) isVarSet(name string) bool {
+	switch name {
+	case "?", "$", "!", "#", "@", "*", "0", "RANDOM", "SECONDS":
+		return true
+	}
+	if n, err := strconv.Atoi(name); err == nil && n >= 1 {
+		return n <= len(s.positionalParams)
+	}
+	if arrName, _, ok := parseArrayRef(name); ok {
+		_, exists := s.arrays[arrName]
+		return exists
+	}
+	if _, ok := s.arrays[name]; ok {
+		return true
+	}
+	_, ok := s.vars[name]
+	return ok
+}
+
 // parseArrayRef extracts the array name and subscript from strings
 // like "arr[0]", "arr[@]", "arr[expr]". Returns ("", "", false) if
 // the string is not an array reference.

@@ -794,6 +794,32 @@ func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 				File: target,
 			})
 
+		case lexer.TOKEN_AND_GT:
+			r, err := p.parseRedirect(REDIR_OUT)
+			if err != nil {
+				return nil, err
+			}
+			r.Fd = -1
+			cmd.Redirects = append(cmd.Redirects, r)
+			cmd.Redirects = append(cmd.Redirects, Redirect{
+				Fd:   2,
+				Type: REDIR_DUP,
+				File: lexer.Word{{Text: "1", Quote: lexer.Unquoted}},
+			})
+
+		case lexer.TOKEN_AND_APPEND:
+			r, err := p.parseRedirect(REDIR_APPEND)
+			if err != nil {
+				return nil, err
+			}
+			r.Fd = -1
+			cmd.Redirects = append(cmd.Redirects, r)
+			cmd.Redirects = append(cmd.Redirects, Redirect{
+				Fd:   2,
+				Type: REDIR_DUP,
+				File: lexer.Word{{Text: "1", Quote: lexer.Unquoted}},
+			})
+
 		default:
 			if len(cmd.Args) == 0 && len(cmd.Redirects) == 0 && len(cmd.Assigns) == 0 {
 				return nil, fmt.Errorf("expected command, got %s", tok)
@@ -862,6 +888,30 @@ func (p *parser) parseTrailingRedirects() ([]Redirect, error) {
 				Fd:   rTok.Fd,
 				Type: REDIR_DUP,
 				File: target,
+			})
+		case lexer.TOKEN_AND_GT:
+			r, err := p.parseRedirect(REDIR_OUT)
+			if err != nil {
+				return nil, err
+			}
+			r.Fd = -1
+			redirs = append(redirs, r)
+			redirs = append(redirs, Redirect{
+				Fd:   2,
+				Type: REDIR_DUP,
+				File: lexer.Word{{Text: "1", Quote: lexer.Unquoted}},
+			})
+		case lexer.TOKEN_AND_APPEND:
+			r, err := p.parseRedirect(REDIR_APPEND)
+			if err != nil {
+				return nil, err
+			}
+			r.Fd = -1
+			redirs = append(redirs, r)
+			redirs = append(redirs, Redirect{
+				Fd:   2,
+				Type: REDIR_DUP,
+				File: lexer.Word{{Text: "1", Quote: lexer.Unquoted}},
 			})
 		default:
 			return redirs, nil

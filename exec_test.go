@@ -589,3 +589,105 @@ func TestRematchNoMatch(t *testing.T) {
 	got := runCapture(t, s, `[[ "abc" =~ [0-9]+ ]]; echo ${#BASH_REMATCH[@]}`)
 	assertOutput(t, got, "0")
 }
+
+// --- let builtin ---
+
+func TestLetAssign(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, "let x=5; echo $x")
+	assertOutput(t, got, "5")
+}
+
+func TestLetMultiple(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, "let a=2 b=3; echo $a $b")
+	assertOutput(t, got, "2 3")
+}
+
+func TestLetExitTrue(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, "let 1")
+	assertStatus(t, s, 0)
+}
+
+func TestLetExitFalse(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, "let 0")
+	assertStatus(t, s, 1)
+}
+
+func TestLetExpr(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, "let 'x=2+3'; echo $x")
+	assertOutput(t, got, "5")
+}
+
+// --- Case conversion expansions ---
+
+func TestCaseUpperAll(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=hello; echo ${X^^}`)
+	assertOutput(t, got, "HELLO")
+}
+
+func TestCaseLowerAll(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=HELLO; echo ${X,,}`)
+	assertOutput(t, got, "hello")
+}
+
+func TestCaseUpperFirst(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=hello; echo ${X^}`)
+	assertOutput(t, got, "Hello")
+}
+
+func TestCaseLowerFirst(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=Hello; echo ${X,}`)
+	assertOutput(t, got, "hello")
+}
+
+func TestCaseUpperPattern(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=foobar; echo ${X^^[fo]}`)
+	assertOutput(t, got, "FOObar")
+}
+
+func TestCaseLowerPattern(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=FOOBAR; echo ${X,,[FO]}`)
+	assertOutput(t, got, "fooBAR")
+}
+
+func TestCaseEmpty(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=; echo "x${X^^}x"`)
+	assertOutput(t, got, "xx")
+}
+
+// --- select loop ---
+
+func TestSelectBasic(t *testing.T) {
+	s := testState(t)
+	got := runCaptureWithStdin(t, s, `select x in a b c; do echo $x; break; done`, "1\n")
+	assertOutput(t, got, "a")
+}
+
+func TestSelectReply(t *testing.T) {
+	s := testState(t)
+	got := runCaptureWithStdin(t, s, `select x in a b c; do echo $REPLY; break; done`, "2\n")
+	assertOutput(t, got, "2")
+}
+
+func TestSelectInvalid(t *testing.T) {
+	s := testState(t)
+	got := runCaptureWithStdin(t, s, `select x in a b; do if [ -n "$x" ]; then echo $x; break; fi; done`, "99\n1\n")
+	assertOutput(t, got, "a")
+}
+
+func TestSelectEOF(t *testing.T) {
+	s := testState(t)
+	got := runCaptureWithStdin(t, s, `select x in a; do echo $x; done; echo done`, "")
+	assertOutput(t, got, "done")
+}

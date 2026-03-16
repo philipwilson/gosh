@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // expandVarsInWord expands $VAR references in a word, respecting quoting.
@@ -477,6 +478,46 @@ func expandParam(content string, lookup LookupFunc) string {
 		return substitutePattern(value, pat, rep, true)
 	case ":":
 		return substringExtract(value, word)
+	case "^":
+		if len(value) == 0 {
+			return ""
+		}
+		r := []rune(value)
+		if word == "" || patternMatch(word, string(r[0])) {
+			r[0] = unicode.ToUpper(r[0])
+		}
+		return string(r)
+	case "^^":
+		if word == "" {
+			return strings.ToUpper(value)
+		}
+		r := []rune(value)
+		for i, ch := range r {
+			if patternMatch(word, string(ch)) {
+				r[i] = unicode.ToUpper(ch)
+			}
+		}
+		return string(r)
+	case ",":
+		if len(value) == 0 {
+			return ""
+		}
+		r := []rune(value)
+		if word == "" || patternMatch(word, string(r[0])) {
+			r[0] = unicode.ToLower(r[0])
+		}
+		return string(r)
+	case ",,":
+		if word == "" {
+			return strings.ToLower(value)
+		}
+		r := []rune(value)
+		for i, ch := range r {
+			if patternMatch(word, string(ch)) {
+				r[i] = unicode.ToLower(ch)
+			}
+		}
+		return string(r)
 	}
 
 	return value
@@ -526,12 +567,12 @@ func parseParamOp(content string) (name, op, word string) {
 	rest := string(runes[i:])
 
 	// Check for two-character operators first, then single-character.
-	for _, candidate := range []string{"%%", "##", "//", ":-", ":+", ":=", ":?"} {
+	for _, candidate := range []string{"%%", "##", "//", ":-", ":+", ":=", ":?", "^^", ",,"} {
 		if strings.HasPrefix(rest, candidate) {
 			return name, candidate, rest[len(candidate):]
 		}
 	}
-	for _, candidate := range []string{"%", "#", "/", "-", "+", "=", "?"} {
+	for _, candidate := range []string{"%", "#", "/", "-", "+", "=", "?", "^", ","} {
 		if strings.HasPrefix(rest, candidate) {
 			return name, candidate, rest[len(candidate):]
 		}

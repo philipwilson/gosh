@@ -12,7 +12,7 @@ import (
 var reservedWords = map[string]bool{
 	"then": true, "elif": true, "else": true, "fi": true,
 	"do": true, "done": true, "in": true,
-	"esac": true, "}": true, "until": true,
+	"esac": true, "}": true, "until": true, "select": true,
 }
 
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
@@ -179,6 +179,8 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseFor()
 		case "case":
 			return p.parseCase()
+		case "select":
+			return p.parseSelect()
 		case "[[":
 			return p.parseDblBracket()
 		default:
@@ -416,6 +418,56 @@ func (p *parser) parseFor() (Command, error) {
 	}
 
 	return &ForCmd{VarName: varName, Words: words, Body: body}, nil
+}
+
+// parseSelect parses: 'select' NAME 'in' word... ';' 'do' list 'done'
+func (p *parser) parseSelect() (*SelectCmd, error) {
+	p.next() // consume "select"
+
+	tok := p.peek()
+	if tok.Type != lexer.TOKEN_WORD {
+		return nil, fmt.Errorf("expected variable name after 'select', got %s", tok)
+	}
+	varName := tok.Val
+	p.next()
+
+	if !p.expectWord("in") {
+		return nil, fmt.Errorf("expected 'in' after 'select %s', got %s", varName, p.peek())
+	}
+
+	var words []lexer.Word
+	for {
+		tok = p.peek()
+		if tok.Type == lexer.TOKEN_SEMI {
+			p.next()
+			break
+		}
+		if tok.Type == lexer.TOKEN_WORD && tok.Val == "do" {
+			break
+		}
+		if tok.Type == lexer.TOKEN_EOF {
+			return nil, fmt.Errorf("expected 'do', got EOF")
+		}
+		if tok.Type != lexer.TOKEN_WORD {
+			return nil, fmt.Errorf("expected word in 'select' list, got %s", tok)
+		}
+		p.next()
+		words = append(words, tok.Parts)
+	}
+
+	if !p.expectWord("do") {
+		return nil, fmt.Errorf("expected 'do', got %s", p.peek())
+	}
+
+	body, err := p.parseList("done")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("done") {
+		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
+	}
+
+	return &SelectCmd{VarName: varName, Words: words, Body: body}, nil
 }
 
 // parseArithFor parses: (( init; cond; step )) [;] do list done

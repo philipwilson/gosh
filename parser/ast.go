@@ -273,6 +273,16 @@ func cloneCommand(c Command) Command {
 			Name: c.Name,
 			Body: CloneList(c.Body),
 		}
+	case *SelectCmd:
+		words := make([]lexer.Word, len(c.Words))
+		for i, w := range c.Words {
+			words[i] = CloneWord(w)
+		}
+		return &SelectCmd{
+			VarName: c.VarName,
+			Words:   words,
+			Body:    CloneList(c.Body),
+		}
 	case *ArithForCmd:
 		return &ArithForCmd{
 			Init: c.Init,
@@ -395,6 +405,25 @@ func (c *ForCmd) String() string {
 		words = append(words, w.String())
 	}
 	return "For[" + c.VarName + " in " + strings.Join(words, " ") + " body=" + c.Body.String() + "]"
+}
+
+// --- SelectCmd ---
+
+// SelectCmd represents: select NAME in word...; do list; done
+type SelectCmd struct {
+	VarName string       // the selection variable name
+	Words   []lexer.Word // words to display as menu items
+	Body    *List
+}
+
+func (c *SelectCmd) node()    {}
+func (c *SelectCmd) command() {}
+func (c *SelectCmd) String() string {
+	var words []string
+	for _, w := range c.Words {
+		words = append(words, w.String())
+	}
+	return "Select[" + c.VarName + " in " + strings.Join(words, " ") + " body=" + c.Body.String() + "]"
 }
 
 // --- ArithForCmd ---

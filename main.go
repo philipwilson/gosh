@@ -88,6 +88,9 @@ func newShellState() *shellState {
 	if _, ok := s.vars["PS2"]; !ok {
 		s.vars["PS2"] = "> "
 	}
+	if _, ok := s.vars["PS3"]; !ok {
+		s.vars["PS3"] = "#? "
+	}
 
 	s.startTime = time.Now()
 	s.traps = make(map[string]string)

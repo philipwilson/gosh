@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"gosh/expander"
 )
 
 // builtinFunc is the signature for all builtin commands.
@@ -52,6 +54,7 @@ var builtins = map[string]builtinFunc{
 	"set":             builtinSet,
 	"wait":            builtinWait,
 	"exec":            builtinExecStub,
+	"let":             builtinLet,
 }
 
 // builtinCd changes the shell's working directory.
@@ -758,6 +761,31 @@ func builtinVersion(state *shellState, args []string, stdin, stdout *os.File) in
 // The actual exec logic is in execExec, called from execSimple.
 func builtinExecStub(state *shellState, args []string, stdin, stdout *os.File) int {
 	return 0
+}
+
+// builtinLet evaluates arithmetic expressions.
+// Returns 0 if the last expression is non-zero, 1 if zero (bash semantics).
+func builtinLet(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "gosh: let: expression expected\n")
+		return 1
+	}
+	lookup := func(name string) string { return state.lookup(name) }
+	setVar := func(name, value string) { state.setVar(name, value) }
+	var last int64
+	for _, arg := range args {
+		expr := expander.ExpandDollar(arg, lookup)
+		val, err := expander.EvalArith(expr, lookup, setVar)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: let: %s\n", err)
+			return 1
+		}
+		last = val
+	}
+	if last != 0 {
+		return 0
+	}
+	return 1
 }
 
 func init() {

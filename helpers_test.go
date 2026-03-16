@@ -111,6 +111,49 @@ func assertVar(t *testing.T, state *shellState, name, want string) {
 	}
 }
 
+// runCaptureWithStdin lexes, parses, and executes a command string,
+// providing the given input on stdin and capturing stdout output.
+func runCaptureWithStdin(t *testing.T, state *shellState, cmd, stdinData string) string {
+	t.Helper()
+	tokens, err := lexer.Lex(cmd)
+	if err != nil {
+		t.Fatalf("lex %q: %v", cmd, err)
+	}
+	tokens = expandAliases(state, tokens)
+	list, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse %q: %v", cmd, err)
+	}
+
+	// Create stdin pipe.
+	rIn, wIn, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	go func() {
+		wIn.WriteString(stdinData)
+		wIn.Close()
+	}()
+
+	// Capture stdout.
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		rIn.Close()
+		t.Fatalf("pipe: %v", err)
+	}
+
+	execList(state, list, rIn, wOut)
+	wOut.Close()
+	rIn.Close()
+
+	out, err := io.ReadAll(rOut)
+	rOut.Close()
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
 // runCaptureBoth runs a command capturing both stdout and stderr.
 func runCaptureBoth(t *testing.T, state *shellState, cmd string) (stdout, stderr string) {
 	t.Helper()

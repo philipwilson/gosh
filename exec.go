@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -321,6 +322,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execArithFor(state, c, stdin, stdout)
 	case *parser.CaseCmd:
 		return execCase(state, c, stdin, stdout)
+	case *parser.SelectCmd:
+		return execSelect(state, c, stdin, stdout)
 	case *parser.DblBracketCmd:
 		return execDblBracket(state, c)
 	case *parser.SubshellCmd:
@@ -655,6 +658,91 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout *os.File) in
 	}
 
 	// No match — exit status 0.
+	state.lastStatus = 0
+	return 0
+}
+
+// execSelect runs a select/in/do/done interactive menu loop.
+// Displays a numbered menu, reads user input from stdin, sets the
+// loop variable to the selected item (or empty for invalid), and
+// sets REPLY to the raw input.
+func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout *os.File) int {
+	// Expand the word list (same pattern as execFor).
+	expandedWords := make([]lexer.Word, len(cmd.Words))
+	for i, w := range cmd.Words {
+		expandedWords[i] = parser.CloneWord(w)
+	}
+	tmpCmd := &parser.SimpleCmd{Args: expandedWords}
+	expander.Expand(&parser.List{
+		Entries: []parser.ListEntry{{
+			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
+		}},
+	}, state.lookup, state.cmdSubst, state.setVar, state.lookupArray)
+	values := tmpCmd.ArgStrings()
+
+	if len(values) == 0 {
+		state.lastStatus = 0
+		return 0
+	}
+
+	state.loopDepth++
+	defer func() { state.loopDepth-- }()
+
+	reader := bufio.NewReader(stdin)
+	displayMenu := true
+
+	for {
+		if displayMenu {
+			for i, v := range values {
+				fmt.Fprintf(os.Stderr, "%d) %s\n", i+1, v)
+			}
+			displayMenu = false
+		}
+
+		// Display PS3 prompt.
+		ps3 := state.vars["PS3"]
+		if ps3 == "" {
+			ps3 = "#? "
+		}
+		fmt.Fprint(os.Stderr, ps3)
+
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			// EOF — exit loop.
+			break
+		}
+		line = strings.TrimRight(line, "\n\r")
+
+		if line == "" {
+			// Empty input — redisplay menu.
+			displayMenu = true
+			continue
+		}
+
+		// Try to parse as number.
+		n, parseErr := strconv.Atoi(line)
+		if parseErr != nil || n < 1 || n > len(values) {
+			state.setVar(cmd.VarName, "")
+		} else {
+			state.setVar(cmd.VarName, values[n-1])
+		}
+		state.setVar("REPLY", line)
+
+		body := parser.CloneList(cmd.Body)
+		execList(state, body, stdin, stdout)
+
+		if state.exitFlag || state.returnFlag || state.breakFlag {
+			if state.breakFlag {
+				state.breakFlag = false
+			}
+			return state.lastStatus
+		}
+		if state.continueFlag {
+			state.continueFlag = false
+			displayMenu = true
+		}
+	}
+
 	state.lastStatus = 0
 	return 0
 }

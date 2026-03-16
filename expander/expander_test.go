@@ -916,3 +916,72 @@ func expectArgs(t *testing.T, list *parser.List, entryIdx int, want ...string) {
 		}
 	}
 }
+
+// --- Case conversion expansion tests ---
+
+func TestExpandCaseUpperAll(t *testing.T) {
+	lookup := func(name string) string {
+		if name == "X" {
+			return "hello"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${X^^}`)
+	Expand(list, lookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "HELLO")
+}
+
+func TestExpandCaseLowerAll(t *testing.T) {
+	lookup := func(name string) string {
+		if name == "X" {
+			return "HELLO"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${X,,}`)
+	Expand(list, lookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "hello")
+}
+
+func TestExpandCaseUpperFirst(t *testing.T) {
+	lookup := func(name string) string {
+		if name == "X" {
+			return "hello"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${X^}`)
+	Expand(list, lookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "Hello")
+}
+
+func TestExpandCaseLowerFirst(t *testing.T) {
+	lookup := func(name string) string {
+		if name == "X" {
+			return "Hello"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${X,}`)
+	Expand(list, lookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "hello")
+}
+
+func TestExpandCaseUpperPattern(t *testing.T) {
+	lookup := func(name string) string {
+		if name == "X" {
+			return "foobar"
+		}
+		return ""
+	}
+	list := mustParse(t, `echo ${X^^[fo]}`)
+	Expand(list, lookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "FOObar")
+}
+
+func TestExpandCaseEmpty(t *testing.T) {
+	lookup := func(name string) string { return "" }
+	list := mustParse(t, `echo "${X^^}"`)
+	Expand(list, lookup, nil, nil, nil)
+	expectArgs(t, list, 0, "echo", "")
+}

@@ -78,8 +78,8 @@ type winsize struct {
 
 const ioctlGetWinsz = 0x5413 // TIOCGWINSZ
 
-// termWidth returns the terminal width in columns, or -1 on error.
-func termWidth(fd int) int {
+// termSize returns the terminal dimensions (cols, rows), or (-1, -1) on error.
+func termSize(fd int) (cols, rows int) {
 	var ws winsize
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -88,9 +88,9 @@ func termWidth(fd int) int {
 		uintptr(unsafe.Pointer(&ws)),
 	)
 	if errno != 0 {
-		return -1
+		return -1, -1
 	}
-	return int(ws.Col)
+	return int(ws.Col), int(ws.Row)
 }
 
 func makeRaw(t *termios) {

@@ -77,6 +77,9 @@ doneFlags:
 		} else {
 			state.ed = ed
 			state.ed.Complete = state.complete
+			state.ed.WinchCh = state.winchCh
+			// Set initial LINES/COLUMNS from terminal dimensions.
+			state.updateWinSize()
 		}
 
 		// Source ~/.goshrc if it exists.
@@ -290,6 +293,10 @@ func runTokensWithIO(state *shellState, tokens []lexer.Token, stdin, stdout, std
 func runInteractive(state *shellState) {
 	for {
 		state.reapJobs()
+		// Process any pending SIGWINCH before computing the prompt.
+		// This ensures LINES/COLUMNS are up-to-date and the editor
+		// knows the current terminal dimensions for cursor math.
+		state.drainWinch()
 		prompt := state.formatPrompt(state.vars["PS1"])
 		line, err := state.ed.ReadLine(prompt)
 		if err == io.EOF {

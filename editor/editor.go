@@ -37,6 +37,9 @@ type CompleteFunc func(line string, pos int) []string
 type Editor struct {
 	History  *History
 	Complete CompleteFunc
+	WinchCh  <-chan struct{} // signaled when SIGWINCH is received
+	Cols     int             // terminal width (updated on SIGWINCH)
+	Rows     int             // terminal height (updated on SIGWINCH)
 	fd       int
 	in       *os.File
 	orig     termios
@@ -50,8 +53,17 @@ func New(fd int, historyPath string) (*Editor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tcgetattr: %w", err)
 	}
+	cols, rows := termSize(fd)
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
 	return &Editor{
 		History: NewHistory(historyPath),
+		Cols:    cols,
+		Rows:    rows,
 		fd:      fd,
 		in:      os.NewFile(uintptr(fd), "/dev/stdin"),
 		orig:    orig,
@@ -62,6 +74,19 @@ func New(fd int, historyPath string) (*Editor, error) {
 func (e *Editor) Close() {
 	tcsetattr(e.fd, &e.orig)
 	e.History.Save()
+}
+
+// QuerySize re-queries the terminal dimensions via TIOCGWINSZ and
+// updates Cols/Rows. Returns true if either dimension changed.
+func (e *Editor) QuerySize() bool {
+	cols, rows := termSize(e.fd)
+	if cols <= 0 || rows <= 0 {
+		return false
+	}
+	changed := cols != e.Cols || rows != e.Rows
+	e.Cols = cols
+	e.Rows = rows
+	return changed
 }
 
 // ReadLine displays the prompt and reads a line of input with editing
@@ -112,6 +137,10 @@ func (e *Editor) edit(prompt string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+
+		// After each key read (which may have been interrupted by
+		// SIGWINCH), check for pending resize and redraw if needed.
+		e.drainWinch()
 
 		switch key {
 		case keyEnter:
@@ -294,7 +323,7 @@ func (e *Editor) handleTab(buf *[]rune, pos *int, prompt string, refresh func(),
 // displayCandidates shows completion candidates below the current line,
 // formatted in columns based on terminal width.
 func (e *Editor) displayCandidates(candidates []string, prompt, buf string, pos, bufLen int) {
-	width := termWidth(e.fd)
+	width := e.Cols
 	if width <= 0 {
 		width = 80
 	}
@@ -366,14 +395,16 @@ const (
 )
 
 // readByte reads a single byte from the terminal, retrying on EINTR.
-// Signals (e.g., SIGCHLD from a finished background job) can
-// interrupt the read syscall; retrying is standard practice.
+// Signals (e.g., SIGCHLD from a finished background job, or SIGWINCH
+// from a terminal resize) can interrupt the read syscall. On EINTR we
+// drain the WinchCh to detect resize events and retry.
 func (e *Editor) readByte() (byte, error) {
 	var b [1]byte
 	for {
 		n, err := e.in.Read(b[:])
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
+				e.drainWinch()
 				continue
 			}
 			return 0, err
@@ -382,6 +413,22 @@ func (e *Editor) readByte() (byte, error) {
 			return 0, io.EOF
 		}
 		return b[0], nil
+	}
+}
+
+// drainWinch non-blockingly drains the WinchCh and updates terminal
+// dimensions if a SIGWINCH was received.
+func (e *Editor) drainWinch() {
+	if e.WinchCh == nil {
+		return
+	}
+	for {
+		select {
+		case <-e.WinchCh:
+			e.QuerySize()
+		default:
+			return
+		}
 	}
 }
 

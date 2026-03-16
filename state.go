@@ -79,6 +79,7 @@ type shellState struct {
 	paramError       bool                 // set when ${var:?msg} triggers on unset/empty var
 	lastBgPid        int                  // $! — PID of last background command
 	startTime        time.Time            // for $SECONDS
+	winchCh          chan struct{}         // buffered channel signaled on SIGWINCH
 }
 
 func newShellState() *shellState {
@@ -137,6 +138,25 @@ func newShellState() *shellState {
 		// POSIX resets caught handlers to SIG_DFL, so children get
 		// default signal behavior.
 		signal.Notify(s.sigCh, syscall.SIGINT, syscall.SIGTSTP)
+
+		// Register SIGWINCH to detect terminal resize events.
+		// The handler sends on a buffered channel that the editor
+		// drains after each key read, and the REPL drains before
+		// each prompt. This is the same deferred-processing pattern
+		// used by zsh: the signal sets a flag, and the redraw
+		// happens at a safe point in the event loop.
+		s.winchCh = make(chan struct{}, 1)
+		winchSig := make(chan os.Signal, 1)
+		signal.Notify(winchSig, syscall.SIGWINCH)
+		go func() {
+			for range winchSig {
+				select {
+				case s.winchCh <- struct{}{}:
+				default:
+					// Already pending — don't block.
+				}
+			}
+		}()
 	}
 
 	// Goroutine to receive signals and set pending flags.
@@ -489,6 +509,38 @@ func (s *shellState) environ() []string {
 		env = append(env, k+"="+s.vars[k])
 	}
 	return env
+}
+
+// updateWinSize queries the terminal dimensions via TIOCGWINSZ and
+// updates the LINES and COLUMNS shell variables. If an editor is
+// active, it also updates the editor's cached dimensions. Called
+// before each prompt and when SIGWINCH is detected.
+func (s *shellState) updateWinSize() {
+	if s.ed != nil {
+		s.ed.QuerySize()
+		s.vars["COLUMNS"] = strconv.Itoa(s.ed.Cols)
+		s.vars["LINES"] = strconv.Itoa(s.ed.Rows)
+	}
+}
+
+// drainWinch non-blockingly drains any pending SIGWINCH notification,
+// and if one was pending, re-queries the terminal size.
+func (s *shellState) drainWinch() {
+	if s.winchCh == nil {
+		return
+	}
+	drained := false
+	for {
+		select {
+		case <-s.winchCh:
+			drained = true
+		default:
+			if drained {
+				s.updateWinSize()
+			}
+			return
+		}
+	}
 }
 
 func (s *shellState) setVar(name, value string) {

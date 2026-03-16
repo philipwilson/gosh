@@ -48,6 +48,8 @@ const (
 	CmdSubstDQ                       // $(cmd) or `cmd` inside double quotes
 	ArithSubst                       // $(( expr )) in unquoted context
 	ArithSubstDQ                     // $(( expr )) inside double quotes
+	ProcSubstIn                      // <(cmd) — process substitution input
+	ProcSubstOut                     // >(cmd) — process substitution output
 	Expanded                         // result of unquoted expansion — subject to word splitting
 )
 
@@ -294,6 +296,20 @@ func (l *lexer) lex() ([]Token, error) {
 
 		case ch == '>':
 			l.next()
+			if c, ok := l.peek(); ok && c == '(' {
+				l.next() // consume (
+				cmd, err := l.readCmdSubst()
+				if err != nil {
+					return nil, err
+				}
+				tokens = append(tokens, Token{
+					Type:  TOKEN_WORD,
+					Val:   ">(" + cmd + ")",
+					Parts: Word{WordPart{Text: cmd, Quote: ProcSubstOut}},
+					Fd:    -1,
+				})
+				continue
+			}
 			if c, ok := l.peek(); ok && c == '>' {
 				l.next()
 				tok := Token{Type: TOKEN_APPEND, Fd: -1}
@@ -317,6 +333,20 @@ func (l *lexer) lex() ([]Token, error) {
 
 		case ch == '<':
 			l.next()
+			if c, ok := l.peek(); ok && c == '(' {
+				l.next() // consume (
+				cmd, err := l.readCmdSubst()
+				if err != nil {
+					return nil, err
+				}
+				tokens = append(tokens, Token{
+					Type:  TOKEN_WORD,
+					Val:   "<(" + cmd + ")",
+					Parts: Word{WordPart{Text: cmd, Quote: ProcSubstIn}},
+					Fd:    -1,
+				})
+				continue
+			}
 			if c, ok := l.peek(); ok && c == '<' {
 				l.next() // consume second <
 				// Check for <<< (here string) vs << (heredoc)

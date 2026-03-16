@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	osexec "os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -376,4 +378,121 @@ func TestExecSubstringOffset(t *testing.T) {
 	s := testState(t)
 	got := runCapture(t, s, `X=hello; echo ${X:2}`)
 	assertOutput(t, got, "llo")
+}
+
+// --- $! variable ---
+
+func TestBangVar(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `true & echo $!`)
+	// Should output a number (the PID).
+	got = strings.TrimSpace(got)
+	if got == "" || got == "0" {
+		t.Errorf("$! should be a non-zero PID, got %q", got)
+	}
+}
+
+// --- wait builtin ---
+
+func TestWaitAll(t *testing.T) {
+	s := testState(t)
+	runCapture(t, s, `true & true & wait`)
+	assertStatus(t, s, 0)
+}
+
+func TestWaitPid(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `sh -c 'exit 42' & wait $!; echo $?`)
+	assertOutput(t, got, "42")
+}
+
+func TestWaitInvalid(t *testing.T) {
+	s := testState(t)
+	_, stderr := runCaptureBoth(t, s, `wait %99`)
+	assertStatus(t, s, 127)
+	if !strings.Contains(stderr, "no such job") {
+		t.Errorf("expected 'no such job' error, got %q", stderr)
+	}
+}
+
+// --- exec builtin ---
+
+func TestExecNoOp(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `exec; echo ok`)
+	assertOutput(t, got, "ok")
+}
+
+func TestExecNotFound(t *testing.T) {
+	s := testState(t)
+	_, stderr := runCaptureBoth(t, s, `exec nonexistent_xyz_cmd_12345`)
+	assertStatus(t, s, 127)
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found' error, got %q", stderr)
+	}
+}
+
+func TestExecBuiltinRedirectOut(t *testing.T) {
+	// exec > file permanently redirects the shell's stdout via dup2.
+	// This can't be tested via runCapture (which captures via a pipe),
+	// so we test via a subprocess.
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "out.txt")
+	script := filepath.Join(tmpDir, "test.sh")
+	if err := os.WriteFile(script, []byte("exec > "+tmpFile+"\necho hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use go run to invoke gosh with the script.
+	proc := goRun(t, ".", script)
+	proc.Wait()
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("reading output file: %v", err)
+	}
+	if !strings.Contains(string(data), "hello") {
+		t.Errorf("expected output file to contain 'hello', got %q", string(data))
+	}
+}
+
+// goRun starts "go run . args..." as a subprocess and returns the process.
+func goRun(t *testing.T, dir string, args ...string) *os.Process {
+	t.Helper()
+	goPath, err := osexec.LookPath("go")
+	if err != nil {
+		t.Skipf("go not found in PATH")
+	}
+	cmdArgs := append([]string{"go", "run", "."}, args...)
+	proc, err := os.StartProcess(goPath, cmdArgs, &os.ProcAttr{
+		Dir:   dir,
+		Env:   os.Environ(),
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+	})
+	if err != nil {
+		t.Fatalf("starting go run: %v", err)
+	}
+	return proc
+}
+
+// --- Process substitution ---
+
+func TestProcSubstCat(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `cat <(echo hello)`)
+	assertOutput(t, got, "hello")
+}
+
+func TestProcSubstDiff(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `diff <(echo a) <(echo b)`)
+	if got == "" {
+		t.Error("expected non-empty diff output")
+	}
+}
+
+func TestProcSubstNested(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `cat <(echo $(echo nested))`)
+	assertOutput(t, got, "nested")
 }

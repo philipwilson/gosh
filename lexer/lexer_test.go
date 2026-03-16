@@ -642,3 +642,49 @@ func TestArithCmdUnterminated(t *testing.T) {
 		t.Fatal("expected error for unterminated ((")
 	}
 }
+
+func TestProcSubstIn(t *testing.T) {
+	tokens, err := Lex("cat <(echo hello)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_WORD, TOKEN_EOF)
+	expectWordVal(t, tokens, 0, "cat")
+	expectWordVal(t, tokens, 1, "<(echo hello)")
+	expectParts(t, tokens[1].Parts,
+		WordPart{Text: "echo hello", Quote: ProcSubstIn},
+	)
+}
+
+func TestProcSubstOut(t *testing.T) {
+	tokens, err := Lex("tee >(cat)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_WORD, TOKEN_EOF)
+	expectWordVal(t, tokens, 0, "tee")
+	expectWordVal(t, tokens, 1, ">(cat)")
+	expectParts(t, tokens[1].Parts,
+		WordPart{Text: "cat", Quote: ProcSubstOut},
+	)
+}
+
+func TestProcSubstNotRedirect(t *testing.T) {
+	// Space before ( means it's a redirect, not process substitution.
+	tokens, err := Lex("cmd < file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_LT, TOKEN_WORD, TOKEN_EOF)
+}
+
+func TestProcSubstNested(t *testing.T) {
+	tokens, err := Lex("cat <(echo $(echo nested))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_WORD, TOKEN_EOF)
+	expectParts(t, tokens[1].Parts,
+		WordPart{Text: "echo $(echo nested)", Quote: ProcSubstIn},
+	)
+}

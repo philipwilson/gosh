@@ -59,6 +59,7 @@ type shellState struct {
 	optPipefail      bool                 // set -o pipefail: pipeline fails if any command fails
 	noErrexit        int                  // >0 suppresses errexit (condition contexts, &&/|| LHS)
 	nounsetError     bool                 // set when a nounset violation occurs during expansion
+	lastBgPid        int                  // $! — PID of last background command
 }
 
 func newShellState() *shellState {
@@ -131,6 +132,8 @@ func (s *shellState) lookup(name string) string {
 	switch name {
 	case "?":
 		return strconv.Itoa(s.lastStatus)
+	case "!":
+		return strconv.Itoa(s.lastBgPid)
 	case "$":
 		return strconv.Itoa(os.Getpid())
 	case "#":

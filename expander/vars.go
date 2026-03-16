@@ -248,6 +248,9 @@ func expandDollarMulti(text string, lookup LookupFunc, lookupArray LookupArrayFu
 		case runes[i] == '$':
 			buf.WriteString(lookup("$"))
 			i++
+		case runes[i] == '!':
+			buf.WriteString(lookup("!"))
+			i++
 		case runes[i] == '#':
 			buf.WriteString(lookup("#"))
 			i++
@@ -344,6 +347,9 @@ func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
 			i++
 		case runes[i] == '$':
 			varName = "$"
+			i++
+		case runes[i] == '!':
+			varName = "!"
 			i++
 		case runes[i] == '#':
 			varName = "#"
@@ -656,6 +662,10 @@ func expandDollar(text string, lookup LookupFunc) string {
 
 		case runes[i] == '$':
 			result.WriteString(lookup("$"))
+			i++
+
+		case runes[i] == '!':
+			result.WriteString(lookup("!"))
 			i++
 
 		case runes[i] == '#':

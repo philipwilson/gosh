@@ -50,6 +50,8 @@ var builtins = map[string]builtinFunc{
 	"debug-expanded":  builtinDebugExpanded,
 	"history":         builtinHistory,
 	"set":             builtinSet,
+	"wait":            builtinWait,
+	"exec":            builtinExecStub,
 }
 
 // builtinCd changes the shell's working directory.
@@ -752,6 +754,12 @@ func builtinVersion(state *shellState, args []string, stdin, stdout *os.File) in
 	return 0
 }
 
+// builtinExecStub exists for tab completion and type/command -v.
+// The actual exec logic is in execExec, called from execSimple.
+func builtinExecStub(state *shellState, args []string, stdin, stdout *os.File) int {
+	return 0
+}
+
 func init() {
 	// Registered in init to break the initialization cycle:
 	// builtins → builtinSource → runScript → runLine → ... → builtins.
@@ -1177,4 +1185,102 @@ func builtinBg(state *shellState, args []string, stdin, stdout *os.File) int {
 	j.state = jobRunning
 	fmt.Fprintf(os.Stderr, "[%d]+ %s &\n", j.id, j.cmd)
 	return 0
+}
+
+// builtinWait waits for background jobs or specific PIDs to complete.
+//
+//	wait         — wait for all background jobs
+//	wait %N      — wait for job N
+//	wait PID ... — wait for specific PIDs
+func builtinWait(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		// Wait for all background jobs.
+		lastStatus := 0
+		for len(state.jobs) > 0 {
+			j := state.jobs[0]
+			if j.state == jobDone {
+				state.removeJob(j.id)
+				continue
+			}
+			status := waitJob(state, j)
+			lastStatus = status
+		}
+		return lastStatus
+	}
+
+	lastStatus := 0
+	for _, arg := range args {
+		if len(arg) > 0 && arg[0] == '%' {
+			// Job spec.
+			id, err := parseJobSpec([]string{arg})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gosh: wait: %v\n", err)
+				return 127
+			}
+			j := state.findJob(id)
+			if j == nil {
+				fmt.Fprintf(os.Stderr, "gosh: wait: %%%d: no such job\n", id)
+				return 127
+			}
+			lastStatus = waitJob(state, j)
+		} else {
+			// PID.
+			pid, err := strconv.Atoi(arg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gosh: wait: %s: not a pid or valid job spec\n", arg)
+				return 127
+			}
+			// Check if this PID belongs to a known job.
+			found := false
+			for _, j := range state.jobs {
+				for _, p := range j.pids {
+					if p == pid {
+						lastStatus = waitJob(state, j)
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				// Try to wait on the PID directly.
+				var ws syscall.WaitStatus
+				_, err := syscall.Wait4(pid, &ws, 0, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "gosh: wait: pid %d is not a child of this shell\n", pid)
+					return 127
+				}
+				if ws.Signaled() {
+					lastStatus = 128 + int(ws.Signal())
+				} else {
+					lastStatus = ws.ExitStatus()
+				}
+			}
+		}
+	}
+	return lastStatus
+}
+
+// waitJob waits for all processes in a job to finish and removes the job.
+// Returns the exit status of the last process.
+func waitJob(state *shellState, j *job) int {
+	lastStatus := 0
+	if j.state != jobDone {
+		for _, pid := range j.pids {
+			var ws syscall.WaitStatus
+			_, err := syscall.Wait4(pid, &ws, 0, nil)
+			if err != nil {
+				continue
+			}
+			if ws.Signaled() {
+				lastStatus = 128 + int(ws.Signal())
+			} else {
+				lastStatus = ws.ExitStatus()
+			}
+		}
+	}
+	state.removeJob(j.id)
+	return lastStatus
 }

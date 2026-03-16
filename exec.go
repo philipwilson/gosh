@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"gosh/expander"
@@ -174,6 +175,7 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 	cmdText := strings.Join(cmdParts, " | ")
 
 	j := state.addJob(pgid, pids, cmdText, jobRunning)
+	state.lastBgPid = pgid
 	fmt.Fprintf(os.Stderr, "[%d] %d\n", j.id, pgid)
 	state.lastStatus = 0
 }
@@ -632,7 +634,16 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		return 0
 	}
 
+	// Process substitution: replace <(cmd) / >(cmd) args with /dev/fd/N.
+	procCleanup := processProcSubsts(state, cmd, stdin, stdout)
+	defer procCleanup()
+
 	args := cmd.ArgStrings()
+
+	// Special-case exec: needs access to the SimpleCmd redirects.
+	if len(args) > 0 && args[0] == "exec" {
+		return execExec(state, cmd, args[1:], stdin, stdout)
+	}
 
 	// Xtrace: print commands before execution.
 	if state.optXtrace && len(args) > 0 {
@@ -725,6 +736,81 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	}
 
 	return res.status
+}
+
+// execExec implements the exec builtin.
+// With args: replaces the shell process with the given command.
+// Without args but with redirects: permanently redirects shell fds.
+// Without args or redirects: no-op.
+func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		// exec with redirects only (or no-op).
+		if len(cmd.Redirects) == 0 {
+			return 0
+		}
+		fds := [3]*os.File{os.Stdin, os.Stdout, os.Stderr}
+		fds, _, err := applyRedirects(cmd, fds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: exec: %v\n", err)
+			return 1
+		}
+		// Permanently apply redirects via dup2.
+		for i, f := range fds {
+			if f.Fd() != uintptr(i) {
+				if err := syscall.Dup2(int(f.Fd()), i); err != nil {
+					fmt.Fprintf(os.Stderr, "gosh: exec: dup2: %v\n", err)
+					return 1
+				}
+				switch i {
+				case 0:
+					os.Stdin = os.NewFile(0, f.Name())
+				case 1:
+					os.Stdout = os.NewFile(1, f.Name())
+				case 2:
+					os.Stderr = os.NewFile(2, f.Name())
+				}
+			}
+		}
+		return 0
+	}
+
+	// exec cmd args... — replace process.
+	path, err := exec.LookPath(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: exec: %s: not found\n", args[0])
+		return 127
+	}
+
+	// Apply redirects.
+	fds := [3]*os.File{os.Stdin, os.Stdout, os.Stderr}
+	fds, _, redirErr := applyRedirects(cmd, fds)
+	if redirErr != nil {
+		fmt.Fprintf(os.Stderr, "gosh: exec: %v\n", redirErr)
+		return 1
+	}
+	for i, f := range fds {
+		if f.Fd() != uintptr(i) {
+			syscall.Dup2(int(f.Fd()), i)
+		}
+	}
+
+	// Build environment.
+	env := state.environ()
+	for _, a := range cmd.Assigns {
+		env = append(env, a.Name+"="+a.Value.String())
+	}
+
+	// Save history and fire EXIT trap.
+	if state.ed != nil {
+		state.ed.Close()
+	}
+	state.runTrap("EXIT")
+
+	// Replace the process.
+	execErr := syscall.Exec(path, args, env)
+	// If we get here, exec failed.
+	fmt.Fprintf(os.Stderr, "gosh: exec: %s: %v\n", args[0], execErr)
+	return 126
 }
 
 // execFunction runs a user-defined function body with positional params.
@@ -832,6 +918,146 @@ func saveVarState(state *shellState, saved map[string]savedVar, name string) {
 		old, exists := state.vars[name]
 		saved[name] = savedVar{value: old, exists: exists}
 	}
+}
+
+// --- Process substitution ---
+
+// processProcSubsts scans a command's args for process substitution parts
+// (ProcSubstIn / ProcSubstOut). For each one it creates a FIFO (named pipe),
+// spawns a goroutine to run the inner command, and replaces the arg with
+// the FIFO path. Returns a cleanup function that waits for goroutines and
+// removes the FIFOs.
+func processProcSubsts(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File) func() {
+	var wg sync.WaitGroup
+	var fifoDir string
+
+	for i := range cmd.Args {
+		if len(cmd.Args[i]) != 1 {
+			continue
+		}
+		part := cmd.Args[i][0]
+		if part.Quote != lexer.ProcSubstIn && part.Quote != lexer.ProcSubstOut {
+			continue
+		}
+
+		// Create a temp directory for FIFOs on first use.
+		if fifoDir == "" {
+			var err error
+			fifoDir, err = os.MkdirTemp("", "gosh-procsub-*")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gosh: process substitution: %v\n", err)
+				continue
+			}
+		}
+
+		fifoPath := filepath.Join(fifoDir, fmt.Sprintf("fifo%d", i))
+		if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: process substitution: mkfifo: %v\n", err)
+			continue
+		}
+
+		innerCmd := part.Text
+		isInput := part.Quote == lexer.ProcSubstIn
+
+		cmd.Args[i] = lexer.Word{lexer.WordPart{Text: fifoPath, Quote: lexer.SingleQuoted}}
+
+		wg.Add(1)
+		if isInput {
+			// <(cmd): goroutine runs cmd, writes stdout to FIFO
+			go func(cmdText, path string) {
+				defer wg.Done()
+				f, err := os.OpenFile(path, os.O_WRONLY, 0)
+				if err != nil {
+					return
+				}
+				defer f.Close()
+				cloned := cloneShellState(state)
+				cloned.substDepth++
+				tokens, err := lexer.Lex(cmdText)
+				if err != nil {
+					return
+				}
+				list, err := parser.Parse(tokens)
+				if err != nil {
+					return
+				}
+				execList(cloned, list, os.Stdin, f)
+			}(innerCmd, fifoPath)
+		} else {
+			// >(cmd): goroutine runs cmd, reads stdin from FIFO
+			go func(cmdText, path string) {
+				defer wg.Done()
+				f, err := os.Open(path)
+				if err != nil {
+					return
+				}
+				defer f.Close()
+				cloned := cloneShellState(state)
+				cloned.substDepth++
+				tokens, err := lexer.Lex(cmdText)
+				if err != nil {
+					return
+				}
+				list, err := parser.Parse(tokens)
+				if err != nil {
+					return
+				}
+				execList(cloned, list, f, os.Stdout)
+			}(innerCmd, fifoPath)
+		}
+	}
+
+	return func() {
+		wg.Wait()
+		if fifoDir != "" {
+			os.RemoveAll(fifoDir)
+		}
+	}
+}
+
+// cloneShellState creates a deep copy of shell state for use in process
+// substitution goroutines. The clone is isolated: no editor, no jobs,
+// non-interactive.
+func cloneShellState(state *shellState) *shellState {
+	s := &shellState{
+		vars:             make(map[string]string, len(state.vars)),
+		arrays:           make(map[string][]string, len(state.arrays)),
+		exported:         make(map[string]bool, len(state.exported)),
+		aliases:          make(map[string]string, len(state.aliases)),
+		funcs:            make(map[string]*parser.List, len(state.funcs)),
+		traps:            make(map[string]string, len(state.traps)),
+		pendingSignals:   make(map[string]bool),
+		sigCh:            make(chan os.Signal, 8),
+		positionalParams: state.positionalParams,
+		lastStatus:       state.lastStatus,
+		substDepth:       state.substDepth,
+		optErrexit:       state.optErrexit,
+		optNounset:       state.optNounset,
+		optXtrace:        state.optXtrace,
+		optPipefail:      state.optPipefail,
+		termFd:           state.termFd,
+	}
+	for k, v := range state.vars {
+		s.vars[k] = v
+	}
+	for k, v := range state.arrays {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		s.arrays[k] = cp
+	}
+	for k, v := range state.exported {
+		s.exported[k] = v
+	}
+	for k, v := range state.aliases {
+		s.aliases[k] = v
+	}
+	for k, v := range state.funcs {
+		s.funcs[k] = v
+	}
+	for k, v := range state.traps {
+		s.traps[k] = v
+	}
+	return s
 }
 
 // --- Process management ---

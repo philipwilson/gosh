@@ -1100,6 +1100,26 @@ func TestIFSUnsetRead(t *testing.T) {
 	assertOutput(t, got, "a=hello b=world")
 }
 
+// --- $'...' ANSI-C quoting ---
+
+func TestAnsiCQuoteEcho(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `echo $'\t'`)
+	assertOutput(t, got, "\t")
+}
+
+func TestAnsiCQuoteHexEcho(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `printf '%s\n' $'\x41\x42\x43'`)
+	assertOutput(t, got, "ABC")
+}
+
+func TestAnsiCQuoteInVariable(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `x=$'\n'; printf 'a%sb' "$x"`)
+	assertOutput(t, got, "a\nb")
+}
+
 // --- Scanner buffer (>64KB lines) ---
 
 func TestLongLineScript(t *testing.T) {

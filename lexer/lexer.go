@@ -33,6 +33,7 @@ package lexer
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // QuoteContext indicates how a piece of text was quoted in the input.
@@ -517,6 +518,15 @@ func (l *lexer) readWord() (Word, error) {
 			}
 			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubst})
 
+		case ch == '$' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '\'':
+			flushUnquoted()
+			l.next() // consume $
+			part, err := l.readAnsiCQuote()
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+
 		case ch == '$' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '(':
 			flushUnquoted()
 			if l.pos+2 < len(l.input) && l.input[l.pos+2] == '(' {
@@ -569,6 +579,144 @@ func (l *lexer) readSingleQuote() (WordPart, error) {
 		}
 		buf = append(buf, ch)
 	}
+}
+
+// readAnsiCQuote reads a $'...' ANSI-C quoted string. The $ has
+// already been consumed; the opening ' has NOT been consumed yet.
+// Processes backslash escape sequences and returns a SingleQuoted part.
+func (l *lexer) readAnsiCQuote() (WordPart, error) {
+	l.next() // consume opening '
+	var buf []rune
+
+	for {
+		ch, ok := l.next()
+		if !ok {
+			return WordPart{}, fmt.Errorf("unterminated $' quote")
+		}
+		if ch == '\'' {
+			return WordPart{Text: string(buf), Quote: SingleQuoted}, nil
+		}
+		if ch != '\\' {
+			buf = append(buf, ch)
+			continue
+		}
+		// Process escape sequence
+		esc, ok := l.next()
+		if !ok {
+			return WordPart{}, fmt.Errorf("unterminated $' quote")
+		}
+		switch esc {
+		case 'a':
+			buf = append(buf, '\a')
+		case 'b':
+			buf = append(buf, '\b')
+		case 'e', 'E':
+			buf = append(buf, 0x1B)
+		case 'f':
+			buf = append(buf, '\f')
+		case 'n':
+			buf = append(buf, '\n')
+		case 'r':
+			buf = append(buf, '\r')
+		case 't':
+			buf = append(buf, '\t')
+		case 'v':
+			buf = append(buf, '\v')
+		case '\\':
+			buf = append(buf, '\\')
+		case '\'':
+			buf = append(buf, '\'')
+		case '"':
+			buf = append(buf, '"')
+		case 'x':
+			// \xHH — 1-2 hex digits
+			val, n := l.readHexDigits(2)
+			if n == 0 {
+				buf = append(buf, '\\', 'x')
+			} else {
+				buf = append(buf, rune(val))
+			}
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			// \nnn — 1-3 octal digits (first already consumed)
+			val := int(esc - '0')
+			for i := 0; i < 2; i++ {
+				c, ok := l.peek()
+				if !ok || c < '0' || c > '7' {
+					break
+				}
+				l.next()
+				val = val*8 + int(c-'0')
+			}
+			buf = append(buf, rune(val))
+		case 'u':
+			// \uHHHH — 1-4 hex digits
+			val, n := l.readHexDigits(4)
+			if n == 0 {
+				buf = append(buf, '\\', 'u')
+			} else if utf8.ValidRune(rune(val)) {
+				buf = append(buf, rune(val))
+			} else {
+				buf = append(buf, utf8.RuneError)
+			}
+		case 'U':
+			// \UHHHHHHHH — 1-8 hex digits
+			val, n := l.readHexDigits(8)
+			if n == 0 {
+				buf = append(buf, '\\', 'U')
+			} else if utf8.ValidRune(rune(val)) {
+				buf = append(buf, rune(val))
+			} else {
+				buf = append(buf, utf8.RuneError)
+			}
+		case 'c':
+			// \cX — control character
+			c, ok := l.next()
+			if !ok {
+				return WordPart{}, fmt.Errorf("unterminated $' quote")
+			}
+			if c >= 'a' && c <= 'z' {
+				buf = append(buf, c-'a'+1)
+			} else if c >= 'A' && c <= 'Z' {
+				buf = append(buf, c-'A'+1)
+			} else if c == '?' {
+				buf = append(buf, 0x7F) // DEL
+			} else if c == '@' {
+				buf = append(buf, 0) // NUL
+			} else {
+				buf = append(buf, c&0x1F)
+			}
+		default:
+			// Unknown escape — preserve backslash
+			buf = append(buf, '\\', esc)
+		}
+	}
+}
+
+// readHexDigits reads up to max hex digits and returns the value and count read.
+func (l *lexer) readHexDigits(max int) (int, int) {
+	val := 0
+	count := 0
+	for i := 0; i < max; i++ {
+		c, ok := l.peek()
+		if !ok {
+			break
+		}
+		var d int
+		switch {
+		case c >= '0' && c <= '9':
+			d = int(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = int(c-'A') + 10
+		default:
+			return val, count
+		}
+		l.next()
+		val = val*16 + d
+		count++
+	}
+	return val, count
 }
 
 // readDoubleQuote reads a double-quoted string. The opening quote
@@ -627,8 +775,17 @@ func (l *lexer) readDoubleQuote() ([]WordPart, error) {
 			parts = append(parts, WordPart{Text: cmd, Quote: CmdSubstDQ})
 
 		default:
-			// Check for $(( arithmetic or $( command substitution.
+			// Check for $'...' ANSI-C quoting, $(( arithmetic, or $( command substitution.
 			if ch == '$' {
+				if next, ok := l.peek(); ok && next == '\'' {
+					flush()
+					part, err := l.readAnsiCQuote()
+					if err != nil {
+						return nil, err
+					}
+					parts = append(parts, part)
+					continue
+				}
 				if next, ok := l.peek(); ok && next == '(' {
 					if l.pos+1 < len(l.input) && l.input[l.pos+1] == '(' {
 						// $(( — arithmetic substitution

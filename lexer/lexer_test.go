@@ -678,6 +678,146 @@ func TestProcSubstNotRedirect(t *testing.T) {
 	expectTokenTypes(t, tokens, TOKEN_WORD, TOKEN_LT, TOKEN_WORD, TOKEN_EOF)
 }
 
+// --- $'...' ANSI-C quoting ---
+
+func TestAnsiCQuoteNewline(t *testing.T) {
+	tokens, err := Lex(`echo $'\n'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\n")
+	expectParts(t, tokens[1].Parts, WordPart{Text: "\n", Quote: SingleQuoted})
+}
+
+func TestAnsiCQuoteMultipleEscapes(t *testing.T) {
+	tokens, err := Lex(`echo $'\t\n'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\t\n")
+}
+
+func TestAnsiCQuoteHex(t *testing.T) {
+	tokens, err := Lex(`echo $'\x41'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "A")
+}
+
+func TestAnsiCQuoteOctal(t *testing.T) {
+	tokens, err := Lex(`echo $'\101'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "A")
+}
+
+func TestAnsiCQuoteUnicode(t *testing.T) {
+	tokens, err := Lex(`echo $'\u0041'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "A")
+}
+
+func TestAnsiCQuoteUnicodeBig(t *testing.T) {
+	tokens, err := Lex(`echo $'\U00000041'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "A")
+}
+
+func TestAnsiCQuoteEscapedQuote(t *testing.T) {
+	tokens, err := Lex(`echo $'\''`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "'")
+}
+
+func TestAnsiCQuoteEscapedBackslash(t *testing.T) {
+	tokens, err := Lex(`echo $'\\'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\\")
+}
+
+func TestAnsiCQuoteBellEscape(t *testing.T) {
+	tokens, err := Lex(`echo $'\a\e'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\a\x1b")
+}
+
+func TestAnsiCQuoteControlChar(t *testing.T) {
+	tokens, err := Lex(`echo $'\cA'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\x01")
+}
+
+func TestAnsiCQuoteMixedWithUnquoted(t *testing.T) {
+	tokens, err := Lex(`hello$'\n'world`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "hello\nworld")
+	expectParts(t, tokens[0].Parts,
+		WordPart{Text: "hello", Quote: Unquoted},
+		WordPart{Text: "\n", Quote: SingleQuoted},
+		WordPart{Text: "world", Quote: Unquoted},
+	)
+}
+
+func TestAnsiCQuoteInDoubleQuotes(t *testing.T) {
+	tokens, err := Lex(`"prefix$'\n'suffix"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "prefix\nsuffix")
+	expectParts(t, tokens[0].Parts,
+		WordPart{Text: "prefix", Quote: DoubleQuoted},
+		WordPart{Text: "\n", Quote: SingleQuoted},
+		WordPart{Text: "suffix", Quote: DoubleQuoted},
+	)
+}
+
+func TestAnsiCQuoteUnknownEscape(t *testing.T) {
+	tokens, err := Lex(`echo $'\q'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\\q")
+}
+
+func TestAnsiCQuoteUnterminated(t *testing.T) {
+	_, err := Lex(`echo $'hello`)
+	if err == nil {
+		t.Fatal("expected error for unterminated $' quote")
+	}
+}
+
+func TestAnsiCQuoteControlDel(t *testing.T) {
+	tokens, err := Lex(`echo $'\c?'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\x7f")
+}
+
+func TestAnsiCQuoteDoubleQuoteEscape(t *testing.T) {
+	tokens, err := Lex(`echo $'\"'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWords(t, tokens, "echo", "\"")
+}
+
 func TestProcSubstNested(t *testing.T) {
 	tokens, err := Lex("cat <(echo $(echo nested))")
 	if err != nil {

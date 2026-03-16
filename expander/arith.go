@@ -3,6 +3,7 @@ package expander
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode"
 )
 
@@ -109,11 +110,24 @@ func tokenizeArith(expr string) ([]arithToken, error) {
 			continue
 		}
 
-		// Bare identifier (variable name without $).
+		// Bare identifier (variable name without $), possibly with [subscript].
 		if isArithNameStart(ch) {
 			start := i
 			for i < len(runes) && isArithNameCont(runes[i]) {
 				i++
+			}
+			// Check for array subscript: name[expr]
+			if i < len(runes) && runes[i] == '[' {
+				depth := 1
+				i++ // skip [
+				for i < len(runes) && depth > 0 {
+					if runes[i] == '[' {
+						depth++
+					} else if runes[i] == ']' {
+						depth--
+					}
+					i++
+				}
 			}
 			tokens = append(tokens, arithToken{aTokIdent, string(runes[start:i])})
 			continue
@@ -215,8 +229,9 @@ func (p *arithParser) parseAssign() (int64, error) {
 		nextOp := p.tokens[p.pos+1].val
 		switch nextOp {
 		case "=", "+=", "-=", "*=", "/=", "%=":
-			name := p.next().val // consume ident
-			p.next()             // consume op
+			rawName := p.next().val // consume ident
+			name := p.resolveArrayName(rawName)
+			p.next() // consume op
 			rhs, err := p.parseAssign()
 			if err != nil {
 				return 0, err
@@ -524,7 +539,7 @@ func (p *arithParser) parseUnary() (int64, error) {
 		if p.peek().typ != aTokIdent {
 			return 0, fmt.Errorf("expected variable after %s", op)
 		}
-		name := p.next().val
+		name := p.resolveArrayName(p.next().val)
 		val := p.lookupInt(name)
 		if op == "++" {
 			val++
@@ -576,7 +591,7 @@ func (p *arithParser) parsePostfix() (int64, error) {
 	if startPos < len(p.tokens) && p.tokens[startPos].typ == aTokIdent {
 		op := p.peek().val
 		if op == "++" || op == "--" {
-			name := p.tokens[startPos].val
+			name := p.resolveArrayName(p.tokens[startPos].val)
 			p.next() // consume ++ or --
 			oldVal := val
 			if op == "++" {
@@ -609,13 +624,14 @@ func (p *arithParser) parsePrimary() (int64, error) {
 
 	case aTokIdent:
 		p.next()
-		val := p.lookup(tok.val)
+		name := p.resolveArrayName(tok.val)
+		val := p.lookup(name)
 		if val == "" {
 			return 0, nil // undefined variables default to 0
 		}
 		n, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("non-integer variable: %s=%q", tok.val, val)
+			return 0, fmt.Errorf("non-integer variable: %s=%q", name, val)
 		}
 		return n, nil
 
@@ -633,6 +649,25 @@ func (p *arithParser) parsePrimary() (int64, error) {
 	}
 
 	return 0, fmt.Errorf("expected number or variable in arithmetic, got %q", tok.val)
+}
+
+// resolveArrayName evaluates array subscripts in arithmetic identifiers.
+// For "arr[expr]", evaluates expr as arithmetic and returns "arr[N]".
+// For plain names, returns the name unchanged.
+func (p *arithParser) resolveArrayName(name string) string {
+	idx := strings.IndexByte(name, '[')
+	if idx < 0 || !strings.HasSuffix(name, "]") {
+		return name
+	}
+	arrName := name[:idx]
+	subscript := name[idx+1 : len(name)-1]
+	// Expand variables in subscript.
+	subscript = ExpandDollar(subscript, p.lookup)
+	val, err := EvalArith(subscript, p.lookup, nil)
+	if err != nil {
+		return name
+	}
+	return arrName + "[" + strconv.FormatInt(val, 10) + "]"
 }
 
 func boolToInt(b bool) int64 {

@@ -212,16 +212,37 @@ func builtinLocal(state *shellState, args []string, stdin, stdout *os.File) int 
 
 	scope := state.localScopes[len(state.localScopes)-1]
 
-	for _, arg := range args {
+	// Check for -a flag (declare local array).
+	declareArray := false
+	startIdx := 0
+	if len(args) > 0 && args[0] == "-a" {
+		declareArray = true
+		startIdx = 1
+	}
+
+	for _, arg := range args[startIdx:] {
 		name, value, hasValue := strings.Cut(arg, "=")
 		// Only save the first time a variable is declared local in
 		// this scope — subsequent "local x=newval" should not
 		// overwrite the saved original.
 		if _, already := scope[name]; !already {
-			old, exists := state.vars[name]
-			scope[name] = savedVar{value: old, exists: exists}
+			if arr, isArr := state.arrays[name]; isArr {
+				cp := make([]string, len(arr))
+				copy(cp, arr)
+				scope[name] = savedVar{exists: true, isArray: true, arrayVal: cp}
+			} else if declareArray {
+				// Declaring a new local array — save that it didn't exist.
+				scope[name] = savedVar{exists: false, isArray: true}
+			} else {
+				old, exists := state.vars[name]
+				scope[name] = savedVar{value: old, exists: exists}
+			}
 		}
-		if hasValue {
+		if declareArray {
+			if !hasValue {
+				state.setArray(name, nil)
+			}
+		} else if hasValue {
 			state.setVar(name, value)
 		} else {
 			state.setVar(name, "")
@@ -315,8 +336,11 @@ func builtinExport(state *shellState, args []string, stdin, stdout *os.File) int
 }
 
 // builtinUnset removes variables from the shell.
+// Supports unsetting array elements: unset 'arr[N]'
 func builtinUnset(state *shellState, args []string, stdin, stdout *os.File) int {
 	for _, name := range args {
+		// Strip quotes that the user might have used to protect brackets.
+		name = strings.Trim(name, "'\"")
 		state.unsetVar(name)
 	}
 	return 0
@@ -334,12 +358,21 @@ func builtinUnset(state *shellState, args []string, stdin, stdout *os.File) int 
 // -r: raw mode — backslash does not act as an escape character.
 func builtinRead(state *shellState, args []string, stdin, stdout *os.File) int {
 	raw := false
+	readArray := false
 	varNames := args
 
-	// Parse -r flag.
-	if len(varNames) > 0 && varNames[0] == "-r" {
-		raw = true
-		varNames = varNames[1:]
+	// Parse flags.
+	for len(varNames) > 0 && strings.HasPrefix(varNames[0], "-") {
+		switch varNames[0] {
+		case "-r":
+			raw = true
+			varNames = varNames[1:]
+		case "-a":
+			readArray = true
+			varNames = varNames[1:]
+		default:
+			break
+		}
 	}
 
 	// Read one line from stdin.
@@ -367,6 +400,22 @@ func builtinRead(state *shellState, args []string, stdin, stdout *os.File) int {
 
 	// Strip trailing newline.
 	line = strings.TrimRight(line, "\n")
+
+	// read -a: split into array.
+	if readArray {
+		arrayName := "REPLY"
+		if len(varNames) > 0 {
+			arrayName = varNames[0]
+		}
+		ifs := state.vars["IFS"]
+		if ifs == "" {
+			ifs = " \t\n"
+		}
+		// Split with no field limit.
+		fields := splitByIFS(line, ifs, 1<<30)
+		state.setArray(arrayName, fields)
+		return 0
+	}
 
 	// No variable names: store in REPLY.
 	if len(varNames) == 0 {

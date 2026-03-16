@@ -293,6 +293,12 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 	for k, v := range state.vars {
 		savedVars[k] = v
 	}
+	savedArrays := make(map[string][]string, len(state.arrays))
+	for k, v := range state.arrays {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		savedArrays[k] = cp
+	}
 	savedExported := make(map[string]bool, len(state.exported))
 	for k, v := range state.exported {
 		savedExported[k] = v
@@ -315,6 +321,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 
 	// Restore shell state.
 	state.vars = savedVars
+	state.arrays = savedArrays
 	state.exported = savedExported
 	state.funcs = savedFuncs
 	state.aliases = savedAliases
@@ -329,7 +336,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.
 // Returns 0 if the expression result is non-zero, 1 if zero (bash semantics).
 func execArithCmd(state *shellState, cmd *parser.ArithCmd) int {
 	lookup := func(name string) string { return state.lookup(name) }
-	setVar := func(name, value string) { state.vars[name] = value }
+	setVar := func(name, value string) { state.setVar(name, value) }
 
 	// Expand variables in the expression before evaluation.
 	expr := expander.ExpandDollar(cmd.Expr, lookup)
@@ -454,7 +461,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int 
 // execArithFor evaluates a for (( init; cond; step )) do body done loop.
 func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.File) int {
 	lookup := func(name string) string { return state.lookup(name) }
-	setVar := func(name, value string) { state.vars[name] = value }
+	setVar := func(name, value string) { state.setVar(name, value) }
 
 	// Evaluate init expression.
 	if cmd.Init != "" {
@@ -553,7 +560,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	// Handle assignment-only commands: just set variables.
 	if len(cmd.Args) == 0 {
 		for _, a := range cmd.Assigns {
-			state.setVar(a.Name, a.Value.String())
+			execAssignment(state, a)
 		}
 		return 0
 	}
@@ -564,9 +571,8 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 	if body, ok := state.funcs[args[0]]; ok {
 		saved := make(map[string]savedVar, len(cmd.Assigns))
 		for _, a := range cmd.Assigns {
-			old, exists := state.vars[a.Name]
-			saved[a.Name] = savedVar{value: old, exists: exists}
-			state.setVar(a.Name, a.Value.String())
+			saveVarState(state, saved, a.Name)
+			execAssignment(state, a)
 		}
 
 		fds := [3]*os.File{stdin, stdout, os.Stderr}
@@ -592,9 +598,8 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		// save old values, set new ones, run, then restore.
 		saved := make(map[string]savedVar, len(cmd.Assigns))
 		for _, a := range cmd.Assigns {
-			old, exists := state.vars[a.Name]
-			saved[a.Name] = savedVar{value: old, exists: exists}
-			state.setVar(a.Name, a.Value.String())
+			saveVarState(state, saved, a.Name)
+			execAssignment(state, a)
 		}
 
 		fds := [3]*os.File{stdin, stdout, os.Stderr}
@@ -670,20 +675,83 @@ func execFunction(state *shellState, body *parser.List, args []string, stdin, st
 	return status
 }
 
+// execAssignment processes a single assignment, handling scalar, array,
+// and indexed assignments.
+func execAssignment(state *shellState, a parser.Assignment) {
+	if a.Array != nil {
+		// Array assignment: arr=(a b c) or arr+=(x y)
+		var vals []string
+		for _, w := range a.Array {
+			vals = append(vals, w.String())
+		}
+		if a.Append {
+			state.appendArray(a.Name, vals)
+		} else {
+			state.setArray(a.Name, vals)
+		}
+		return
+	}
+	if a.Index != "" {
+		// Indexed assignment: arr[expr]=val
+		// Evaluate subscript as arithmetic.
+		subscript := expander.ExpandDollar(a.Index, state.lookup)
+		idx, err := expander.EvalArith(subscript, state.lookup, state.setVar)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: %s: bad array subscript\n", a.Index)
+			return
+		}
+		key := a.Name + "[" + strconv.FormatInt(idx, 10) + "]"
+		state.setVar(key, a.Value.String())
+		return
+	}
+	if a.Append {
+		// String append: var+=value
+		state.setVar(a.Name, state.vars[a.Name]+a.Value.String())
+		return
+	}
+	state.setVar(a.Name, a.Value.String())
+}
+
 // savedVar records a variable's previous state for restoration.
 type savedVar struct {
-	value  string
-	exists bool
+	value    string
+	exists   bool
+	isArray  bool
+	arrayVal []string
 }
 
 // restoreVars undoes temporary per-command variable assignments.
 func restoreVars(state *shellState, saved map[string]savedVar) {
 	for name, sv := range saved {
-		if sv.exists {
-			state.setVar(name, sv.value)
+		if sv.isArray {
+			if sv.exists {
+				state.arrays[name] = sv.arrayVal
+			} else {
+				delete(state.arrays, name)
+			}
 		} else {
-			delete(state.vars, name)
+			if sv.exists {
+				state.setVar(name, sv.value)
+			} else {
+				delete(state.vars, name)
+			}
 		}
+	}
+}
+
+// saveVarState saves the current state of a variable (scalar or array)
+// for later restoration.
+func saveVarState(state *shellState, saved map[string]savedVar, name string) {
+	if _, already := saved[name]; already {
+		return
+	}
+	if arr, isArr := state.arrays[name]; isArr {
+		cp := make([]string, len(arr))
+		copy(cp, arr)
+		saved[name] = savedVar{exists: true, isArray: true, arrayVal: cp}
+	} else {
+		old, exists := state.vars[name]
+		saved[name] = savedVar{value: old, exists: exists}
 	}
 }
 

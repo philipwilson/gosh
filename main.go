@@ -24,8 +24,9 @@ var version = "dev"
 // shellState holds the shell's mutable state: variables, export
 // set, last exit status, and terminal control info.
 type shellState struct {
-	vars             map[string]string    // shell variables
-	exported         map[string]bool      // which variables are exported to children
+	vars             map[string]string       // shell variables
+	arrays           map[string][]string     // indexed arrays
+	exported         map[string]bool         // which variables are exported to children
 	aliases          map[string]string       // alias name → replacement text
 	funcs            map[string]*parser.List // user-defined functions
 	lastStatus       int                  // $? — exit status of last command
@@ -51,6 +52,7 @@ type shellState struct {
 func newShellState() *shellState {
 	s := &shellState{
 		vars:     make(map[string]string),
+		arrays:   make(map[string][]string),
 		exported: make(map[string]bool),
 		aliases:  make(map[string]string),
 		funcs:    make(map[string]*parser.List),
@@ -119,20 +121,113 @@ func (s *shellState) lookup(name string) string {
 			}
 			return ""
 		}
+
+		// Array element count: #arr[@] or #arr[*]
+		// Used by expandParam for ${#arr[@]}.
+		if strings.HasPrefix(name, "#") {
+			rest := name[1:]
+			if arrName, subscript, ok := parseArrayRef(rest); ok {
+				if subscript == "@" || subscript == "*" {
+					count := 0
+					for _, v := range s.arrays[arrName] {
+						if v != "" {
+							count++
+						}
+					}
+					return strconv.Itoa(count)
+				}
+			}
+		}
+
+		// Array subscripts: arr[N], arr[@], arr[*]
+		if arrName, subscript, ok := parseArrayRef(name); ok {
+			arr := s.arrays[arrName]
+			switch subscript {
+			case "@", "*":
+				// Filter out unset (empty) elements for sparse arrays.
+				var live []string
+				for _, v := range arr {
+					if v != "" {
+						live = append(live, v)
+					}
+				}
+				return strings.Join(live, " ")
+			default:
+				idx, err := strconv.Atoi(subscript)
+				if err != nil || idx < 0 || idx >= len(arr) {
+					return ""
+				}
+				return arr[idx]
+			}
+		}
+
+		// Bare array name returns element 0.
+		if arr, ok := s.arrays[name]; ok {
+			if len(arr) > 0 {
+				return arr[0]
+			}
+			return ""
+		}
+
 		return s.vars[name]
 	}
+}
+
+// parseArrayRef extracts the array name and subscript from strings
+// like "arr[0]", "arr[@]", "arr[expr]". Returns ("", "", false) if
+// the string is not an array reference.
+func parseArrayRef(s string) (name, subscript string, ok bool) {
+	idx := strings.IndexByte(s, '[')
+	if idx < 0 {
+		return "", "", false
+	}
+	if !strings.HasSuffix(s, "]") {
+		return "", "", false
+	}
+	name = s[:idx]
+	subscript = s[idx+1 : len(s)-1]
+	return name, subscript, true
 }
 
 func (s *shellState) environ() []string {
 	var env []string
 	for k := range s.exported {
+		// Arrays are not exported to children (bash behavior).
+		if _, isArray := s.arrays[k]; isArray {
+			continue
+		}
 		env = append(env, k+"="+s.vars[k])
 	}
 	return env
 }
 
 func (s *shellState) setVar(name, value string) {
+	// Array element assignment: arr[N]=value
+	if arrName, subscript, ok := parseArrayRef(name); ok {
+		idx, err := strconv.Atoi(subscript)
+		if err != nil || idx < 0 {
+			return
+		}
+		arr := s.arrays[arrName]
+		// Grow the array if needed.
+		for len(arr) <= idx {
+			arr = append(arr, "")
+		}
+		arr[idx] = value
+		s.arrays[arrName] = arr
+		return
+	}
 	s.vars[name] = value
+}
+
+// setArray sets an array variable, replacing any existing value.
+func (s *shellState) setArray(name string, vals []string) {
+	s.arrays[name] = vals
+}
+
+// appendArray appends values to an existing array (or creates one).
+func (s *shellState) appendArray(name string, vals []string) {
+	s.arrays[name] = append(s.arrays[name], vals...)
 }
 
 func (s *shellState) exportVar(name string) {
@@ -140,7 +235,23 @@ func (s *shellState) exportVar(name string) {
 }
 
 func (s *shellState) unsetVar(name string) {
+	// Array element: unset arr[N] sets element to ""
+	if arrName, subscript, ok := parseArrayRef(name); ok {
+		arr := s.arrays[arrName]
+		if subscript == "@" || subscript == "*" {
+			delete(s.arrays, arrName)
+			return
+		}
+		idx, err := strconv.Atoi(subscript)
+		if err != nil || idx < 0 || idx >= len(arr) {
+			return
+		}
+		arr[idx] = ""
+		s.arrays[arrName] = arr
+		return
+	}
 	delete(s.vars, name)
+	delete(s.arrays, name)
 	delete(s.exported, name)
 }
 

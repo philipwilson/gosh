@@ -80,11 +80,28 @@ func (r Redirect) String() string {
 
 // Assignment represents a variable assignment like FOO=bar.
 type Assignment struct {
-	Name  string
-	Value lexer.Word // the value (may contain $VAR for expansion)
+	Name   string
+	Value  lexer.Word   // scalar value (empty for array assigns)
+	Index  string       // subscript expression for arr[i]=val ("" for plain assign)
+	Array  []lexer.Word // values for arr=(a b c) or arr+=(x)
+	Append bool         // true for arr+=(...) or var+=val
 }
 
 func (a Assignment) String() string {
+	if a.Array != nil {
+		op := "="
+		if a.Append {
+			op = "+="
+		}
+		var parts []string
+		for _, w := range a.Array {
+			parts = append(parts, w.String())
+		}
+		return fmt.Sprintf("%s%s(%s)", a.Name, op, strings.Join(parts, " "))
+	}
+	if a.Index != "" {
+		return fmt.Sprintf("%s[%s]=%s", a.Name, a.Index, a.Value)
+	}
 	return fmt.Sprintf("%s=%s", a.Name, a.Value)
 }
 
@@ -276,10 +293,19 @@ func cloneCommand(c Command) Command {
 func cloneSimpleCmd(c *SimpleCmd) *SimpleCmd {
 	sc := &SimpleCmd{}
 	for _, a := range c.Assigns {
-		sc.Assigns = append(sc.Assigns, Assignment{
-			Name:  a.Name,
-			Value: CloneWord(a.Value),
-		})
+		ca := Assignment{
+			Name:   a.Name,
+			Value:  CloneWord(a.Value),
+			Index:  a.Index,
+			Append: a.Append,
+		}
+		if a.Array != nil {
+			ca.Array = make([]lexer.Word, len(a.Array))
+			for i, w := range a.Array {
+				ca.Array[i] = CloneWord(w)
+			}
+		}
+		sc.Assigns = append(sc.Assigns, ca)
 	}
 	for _, w := range c.Args {
 		sc.Args = append(sc.Args, CloneWord(w))

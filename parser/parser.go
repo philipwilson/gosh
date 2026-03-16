@@ -181,8 +181,12 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseDblBracket()
 		default:
 			// Check for function definition: WORD ( ) { ... }
+			// Only if the word is a valid identifier (not an assignment
+			// like arr=, arr+=, or arr[0]=).
 			if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == lexer.TOKEN_LPAREN {
-				return p.parseFuncDef()
+				if isValidName(tok.Val) {
+					return p.parseFuncDef()
+				}
 			}
 		}
 	}
@@ -575,12 +579,30 @@ func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 		case lexer.TOKEN_WORD:
 			// Check for assignment before any command word.
 			if !seenArg {
-				if name, value, ok := splitAssignment(tok.Parts); ok {
+				if assign, ok := splitAssignment(tok.Parts); ok {
 					p.next()
-					cmd.Assigns = append(cmd.Assigns, Assignment{
-						Name:  name,
-						Value: value,
-					})
+					// Check for array assignment: name=( or name+=(
+					if len(assign.Value) == 0 && assign.Index == "" && p.peek().Type == lexer.TOKEN_LPAREN {
+						p.next() // consume (
+						var elems []lexer.Word
+						for p.peek().Type != lexer.TOKEN_RPAREN {
+							if p.peek().Type == lexer.TOKEN_EOF {
+								return nil, fmt.Errorf("expected ')' in array assignment")
+							}
+							// Skip semicolons (from newlines).
+							if p.peek().Type == lexer.TOKEN_SEMI {
+								p.next()
+								continue
+							}
+							if p.peek().Type != lexer.TOKEN_WORD {
+								return nil, fmt.Errorf("expected word in array assignment, got %s", p.peek())
+							}
+							elems = append(elems, p.next().Parts)
+						}
+						p.next() // consume )
+						assign.Array = elems
+					}
+					cmd.Assigns = append(cmd.Assigns, assign)
 					continue
 				}
 			}
@@ -669,10 +691,11 @@ func (p *parser) parseRedirect(typ RedirType) (Redirect, error) {
 	return Redirect{Fd: rTok.Fd, Type: typ, File: tok.Parts}, nil
 }
 
-// splitAssignment checks if a word is a variable assignment (NAME=VALUE).
+// splitAssignment checks if a word is a variable assignment (NAME=VALUE),
+// an indexed assignment (NAME[EXPR]=VALUE), or an array append (NAME+=).
 // The name must start with a letter or underscore and contain only
 // alphanumerics and underscores. The = must be in an unquoted part.
-func splitAssignment(w lexer.Word) (name string, value lexer.Word, ok bool) {
+func splitAssignment(w lexer.Word) (assign Assignment, ok bool) {
 	if len(w) == 0 {
 		return
 	}
@@ -684,24 +707,67 @@ func splitAssignment(w lexer.Word) (name string, value lexer.Word, ok bool) {
 		return
 	}
 
-	idx := strings.IndexByte(first.Text, '=')
+	text := first.Text
+
+	// Check for += (append) before checking =.
+	if plusEq := strings.Index(text, "+="); plusEq > 0 {
+		lhs := text[:plusEq]
+		// Check for arr[expr]+= (indexed append — not common, skip for now).
+		// Handle name+=value or name+=( for arrays.
+		if !isValidName(lhs) {
+			// Could be arr[expr]+=, but skip that for now.
+			goto tryPlainAssign
+		}
+		rest := text[plusEq+2:]
+		var value lexer.Word
+		if rest != "" {
+			value = append(value, lexer.WordPart{Text: rest, Quote: lexer.Unquoted})
+		}
+		value = append(value, w[1:]...)
+		return Assignment{Name: lhs, Value: value, Append: true}, true
+	}
+
+tryPlainAssign:
+	idx := strings.IndexByte(text, '=')
 	if idx <= 0 {
 		return // no = found, or starts with = (not a valid name)
 	}
 
-	name = first.Text[:idx]
-	if !isValidName(name) {
-		return "", nil, false
+	lhs := text[:idx]
+
+	// Check for indexed assignment: arr[expr]=value
+	if bracketIdx := strings.IndexByte(lhs, '['); bracketIdx > 0 {
+		arrName := lhs[:bracketIdx]
+		if !isValidName(arrName) {
+			return Assignment{}, false
+		}
+		if !strings.HasSuffix(lhs, "]") {
+			return Assignment{}, false
+		}
+		subscript := lhs[bracketIdx+1 : len(lhs)-1]
+
+		rest := text[idx+1:]
+		var value lexer.Word
+		if rest != "" {
+			value = append(value, lexer.WordPart{Text: rest, Quote: lexer.Unquoted})
+		}
+		value = append(value, w[1:]...)
+		return Assignment{Name: arrName, Index: subscript, Value: value}, true
+	}
+
+	if !isValidName(lhs) {
+		return Assignment{}, false
 	}
 
 	// Build the value from the rest of the text after =.
-	rest := first.Text[idx+1:]
+	rest := text[idx+1:]
+	var value lexer.Word
 	if rest != "" {
 		value = append(value, lexer.WordPart{Text: rest, Quote: lexer.Unquoted})
 	}
 	value = append(value, w[1:]...)
 
-	return name, value, true
+	return Assignment{Name: lhs, Value: value}, true
 }
 
 func isValidName(s string) bool {

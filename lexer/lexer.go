@@ -242,7 +242,7 @@ func (l *lexer) lex() ([]Token, error) {
 			last := tokens[len(tokens)-1].Type
 			if last == TOKEN_SEMI || last == TOKEN_PIPE || last == TOKEN_AND ||
 				last == TOKEN_OR || last == TOKEN_AMP || last == TOKEN_DSEMI ||
-				last == TOKEN_LPAREN || last == TOKEN_RPAREN || last == TOKEN_HEREDOC {
+				last == TOKEN_LPAREN || last == TOKEN_HEREDOC {
 				continue
 			}
 			tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})

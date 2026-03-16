@@ -90,6 +90,9 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 	// Phase 1: tilde expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandTilde(cmd.Assigns[i].Value, lookup)
+		for j := range cmd.Assigns[i].Array {
+			cmd.Assigns[i].Array[j] = expandTilde(cmd.Assigns[i].Array[j], lookup)
+		}
 	}
 	for i := range cmd.Args {
 		cmd.Args[i] = expandTilde(cmd.Args[i], lookup)
@@ -101,6 +104,9 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 	// Phase 2a: arithmetic substitution on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandArithInWord(cmd.Assigns[i].Value, lookup, setVar)
+		for j := range cmd.Assigns[i].Array {
+			cmd.Assigns[i].Array[j] = expandArithInWord(cmd.Assigns[i].Array[j], lookup, setVar)
+		}
 	}
 	for i := range cmd.Args {
 		cmd.Args[i] = expandArithInWord(cmd.Args[i], lookup, setVar)
@@ -113,6 +119,9 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 	if subst != nil {
 		for i := range cmd.Assigns {
 			cmd.Assigns[i].Value = expandCmdSubstInWord(cmd.Assigns[i].Value, subst)
+			for j := range cmd.Assigns[i].Array {
+				cmd.Assigns[i].Array[j] = expandCmdSubstInWord(cmd.Assigns[i].Array[j], subst)
+			}
 		}
 		for i := range cmd.Args {
 			cmd.Args[i] = expandCmdSubstInWord(cmd.Args[i], subst)
@@ -125,6 +134,9 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 	// Phase 3: variable expansion on all words.
 	for i := range cmd.Assigns {
 		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup)
+		for j := range cmd.Assigns[i].Array {
+			cmd.Assigns[i].Array[j] = expandVarsInWord(cmd.Assigns[i].Array[j], lookup)
+		}
 	}
 	for i := range cmd.Args {
 		cmd.Args[i] = expandVarsInWord(cmd.Args[i], lookup)
@@ -647,16 +659,30 @@ func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
 //	${var%pattern}   remove shortest suffix match
 //	${var%%pattern}  remove longest suffix match
 func expandParam(content string, lookup LookupFunc) string {
-	// ${#var} — string length (only when # is followed by a valid name
-	// and nothing else, not an operator like ##).
+	// ${#var} — string length / array length.
 	if len(content) > 1 && content[0] == '#' {
 		rest := content[1:]
-		if isValidVarName(rest) {
+		if isValidVarRef(rest) {
+			// For ${#arr[@]} / ${#arr[*]}, use #arr[@] convention
+			// to get element count from lookup.
+			if idx := strings.IndexByte(rest, '['); idx >= 0 {
+				sub := rest[idx+1:]
+				if strings.HasSuffix(sub, "]") {
+					sub = sub[:len(sub)-1]
+				}
+				if sub == "@" || sub == "*" {
+					return lookup("#" + rest)
+				}
+			}
 			return strconv.Itoa(len([]rune(lookup(rest))))
 		}
 	}
 
 	name, op, word := parseParamOp(content)
+
+	// Evaluate arithmetic subscripts in array references.
+	name = evalArraySubscript(name, lookup)
+
 	if op == "" {
 		return lookup(name)
 	}
@@ -711,7 +737,8 @@ func expandParam(content string, lookup LookupFunc) string {
 
 // parseParamOp extracts the variable name, operator, and word from
 // the content between ${ and }. Returns (name, op, word) where op
-// is "" for a simple ${var} lookup.
+// is "" for a simple ${var} lookup. Array subscripts like arr[0] or
+// arr[@] are included in the name.
 func parseParamOp(content string) (name, op, word string) {
 	runes := []rune(content)
 	i := 0
@@ -731,6 +758,20 @@ func parseParamOp(content string) (name, op, word string) {
 			} else {
 				return content, "", ""
 			}
+		}
+	}
+
+	// Consume array subscript [expr] if present.
+	if i < len(runes) && runes[i] == '[' {
+		depth := 1
+		i++ // skip [
+		for i < len(runes) && depth > 0 {
+			if runes[i] == '[' {
+				depth++
+			} else if runes[i] == ']' {
+				depth--
+			}
+			i++
 		}
 	}
 
@@ -781,6 +822,44 @@ func isValidVarName(s string) bool {
 		}
 	}
 	return true
+}
+
+// isValidVarRef returns true if s is a valid variable name or an
+// array reference like arr[0] or arr[@].
+func isValidVarRef(s string) bool {
+	if isValidVarName(s) {
+		return true
+	}
+	// Check for arr[subscript] pattern.
+	idx := strings.IndexByte(s, '[')
+	if idx <= 0 || !strings.HasSuffix(s, "]") {
+		return false
+	}
+	return isValidVarName(s[:idx])
+}
+
+// evalArraySubscript evaluates arithmetic in array subscripts.
+// For "arr[expr]", it expands $vars in expr and evaluates it as arithmetic.
+// For "arr[@]" and "arr[*]", the subscript is left as-is.
+// For non-array names, returns the name unchanged.
+func evalArraySubscript(name string, lookup LookupFunc) string {
+	idx := strings.IndexByte(name, '[')
+	if idx < 0 || !strings.HasSuffix(name, "]") {
+		return name
+	}
+	arrName := name[:idx]
+	subscript := name[idx+1 : len(name)-1]
+	if subscript == "@" || subscript == "*" {
+		return name
+	}
+	// Expand $vars in the subscript.
+	subscript = expandDollar(subscript, lookup)
+	// Evaluate as arithmetic.
+	val, err := EvalArith(subscript, lookup, nil)
+	if err != nil {
+		return name
+	}
+	return arrName + "[" + strconv.FormatInt(val, 10) + "]"
 }
 
 // removePrefix removes the shortest (or longest) prefix matching

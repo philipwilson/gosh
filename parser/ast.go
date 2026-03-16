@@ -251,6 +251,8 @@ func cloneCommand(c Command) Command {
 			Name: c.Name,
 			Body: CloneList(c.Body),
 		}
+	case *SubshellCmd:
+		return &SubshellCmd{Body: CloneList(c.Body)}
 	case *ArithCmd:
 		return &ArithCmd{Expr: c.Expr}
 	default:
@@ -377,6 +379,20 @@ func (c *FuncDef) node()    {}
 func (c *FuncDef) command() {}
 func (c *FuncDef) String() string {
 	return "FuncDef[" + c.Name + " " + c.Body.String() + "]"
+}
+
+// --- SubshellCmd ---
+
+// SubshellCmd represents: ( list ) — runs commands in a subshell.
+// Variable changes inside the subshell do not affect the parent.
+type SubshellCmd struct {
+	Body *List
+}
+
+func (c *SubshellCmd) node()    {}
+func (c *SubshellCmd) command() {}
+func (c *SubshellCmd) String() string {
+	return "Subshell[" + c.Body.String() + "]"
 }
 
 // --- ArithCmd ---

@@ -268,6 +268,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execFor(state, c, stdin, stdout)
 	case *parser.CaseCmd:
 		return execCase(state, c, stdin, stdout)
+	case *parser.SubshellCmd:
+		return execSubshell(state, c, stdin, stdout)
 	case *parser.ArithCmd:
 		return execArithCmd(state, c)
 	case *parser.FuncDef:
@@ -277,6 +279,46 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
 		return 1
 	}
+}
+
+// execSubshell runs commands in an isolated variable scope.
+// Variable changes inside the subshell do not affect the parent.
+func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout *os.File) int {
+	// Save shell state.
+	savedVars := make(map[string]string, len(state.vars))
+	for k, v := range state.vars {
+		savedVars[k] = v
+	}
+	savedExported := make(map[string]bool, len(state.exported))
+	for k, v := range state.exported {
+		savedExported[k] = v
+	}
+	savedFuncs := make(map[string]*parser.List, len(state.funcs))
+	for k, v := range state.funcs {
+		savedFuncs[k] = v
+	}
+	savedAliases := make(map[string]string, len(state.aliases))
+	for k, v := range state.aliases {
+		savedAliases[k] = v
+	}
+	savedParams := state.positionalParams
+	savedExitFlag := state.exitFlag
+
+	// Run the body.
+	body := parser.CloneList(cmd.Body)
+	execList(state, body, stdin, stdout)
+	status := state.lastStatus
+
+	// Restore shell state.
+	state.vars = savedVars
+	state.exported = savedExported
+	state.funcs = savedFuncs
+	state.aliases = savedAliases
+	state.positionalParams = savedParams
+	state.exitFlag = savedExitFlag
+	state.lastStatus = status
+
+	return status
 }
 
 // execArithCmd evaluates a (( expr )) arithmetic command.

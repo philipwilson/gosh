@@ -667,3 +667,81 @@ func expectArgs(t *testing.T, cmd Command, want ...string) {
 		}
 	}
 }
+
+func TestSubshell(t *testing.T) {
+	tokens, err := lexer.Lex("(echo hello)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(list.Entries))
+	}
+	sub, ok := list.Entries[0].Pipeline.Cmds[0].(*SubshellCmd)
+	if !ok {
+		t.Fatalf("expected SubshellCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if len(sub.Body.Entries) != 1 {
+		t.Fatalf("expected 1 entry in subshell body, got %d", len(sub.Body.Entries))
+	}
+}
+
+func TestSubshellMultipleCommands(t *testing.T) {
+	tokens, err := lexer.Lex("(echo a; echo b)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, ok := list.Entries[0].Pipeline.Cmds[0].(*SubshellCmd)
+	if !ok {
+		t.Fatalf("expected SubshellCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if len(sub.Body.Entries) != 2 {
+		t.Fatalf("expected 2 entries in subshell body, got %d", len(sub.Body.Entries))
+	}
+}
+
+func TestSubshellInList(t *testing.T) {
+	tokens, err := lexer.Lex("(echo a) && echo b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(list.Entries))
+	}
+	_, ok := list.Entries[0].Pipeline.Cmds[0].(*SubshellCmd)
+	if !ok {
+		t.Fatalf("expected SubshellCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if list.Entries[0].Op != "&&" {
+		t.Errorf("expected op '&&', got %q", list.Entries[0].Op)
+	}
+}
+
+func TestArithCmdParse(t *testing.T) {
+	tokens, err := lexer.Lex("(( x + 1 ))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac, ok := list.Entries[0].Pipeline.Cmds[0].(*ArithCmd)
+	if !ok {
+		t.Fatalf("expected ArithCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if ac.Expr != "x + 1" {
+		t.Errorf("expected expr %q, got %q", "x + 1", ac.Expr)
+	}
+}

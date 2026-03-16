@@ -53,6 +53,15 @@ func (p *parser) skipSemis() {
 // that should terminate list parsing.
 func (p *parser) isStopWord(stops ...string) bool {
 	tok := p.peek()
+	// TOKEN_RPAREN matches stop word ")" — used by subshell parsing.
+	if tok.Type == lexer.TOKEN_RPAREN {
+		for _, s := range stops {
+			if s == ")" {
+				return true
+			}
+		}
+		return false
+	}
 	if tok.Type != lexer.TOKEN_WORD {
 		return false
 	}
@@ -179,7 +188,24 @@ func (p *parser) parseCommand() (Command, error) {
 		p.next()
 		return &ArithCmd{Expr: tok.Val}, nil
 	}
+	if tok.Type == lexer.TOKEN_LPAREN {
+		return p.parseSubshell()
+	}
 	return p.parseSimpleCommand()
+}
+
+// parseSubshell parses: '(' list ')'
+func (p *parser) parseSubshell() (*SubshellCmd, error) {
+	p.next() // consume (
+	body, err := p.parseList(")")
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().Type != lexer.TOKEN_RPAREN {
+		return nil, fmt.Errorf("expected ')', got %s", p.peek())
+	}
+	p.next() // consume )
+	return &SubshellCmd{Body: body}, nil
 }
 
 // parseIf parses: 'if' list 'then' list ('elif' list 'then' list)* ('else' list)? 'fi'

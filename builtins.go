@@ -524,6 +524,7 @@ func init() {
 	// builtins → builtinSource → runScript → runLine → ... → builtins.
 	builtins["source"] = builtinSource
 	builtins["."] = builtinSource
+	builtins["eval"] = builtinEval
 }
 
 // builtinSource reads and executes a file in the current shell.
@@ -533,6 +534,17 @@ func builtinSource(state *shellState, args []string, stdin, stdout *os.File) int
 		return 1
 	}
 	return runScript(state, args[0])
+}
+
+// builtinEval joins its arguments with spaces and executes the result
+// as a shell command in the current shell context.
+func builtinEval(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		return 0
+	}
+	line := strings.Join(args, " ")
+	runLine(state, line)
+	return state.lastStatus
 }
 
 // parseJobSpec parses a job specifier like "%1" and returns the job ID.

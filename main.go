@@ -53,7 +53,6 @@ func main() {
 		} else {
 			state.ed = ed
 			state.ed.Complete = state.complete
-			defer ed.Close()
 		}
 
 		// Source ~/.goshrc if it exists.
@@ -69,6 +68,9 @@ func main() {
 		runNonInteractive(state)
 	}
 
+	if state.ed != nil {
+		state.ed.Close()
+	}
 	state.runTrap("EXIT")
 	os.Exit(state.lastStatus)
 }

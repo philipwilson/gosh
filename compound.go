@@ -43,6 +43,9 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, std
 	state.optNounset = saved.optNounset
 	state.optXtrace = saved.optXtrace
 	state.optPipefail = saved.optPipefail
+	state.shoptNullglob = saved.shoptNullglob
+	state.shoptFailglob = saved.shoptFailglob
+	state.shoptNocaseglob = saved.shoptNocaseglob
 	state.trapsMu.Lock()
 	state.traps = saved.traps
 	state.trapsMu.Unlock()
@@ -182,6 +185,10 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout, stderr *os.Fi
 		expandedWords[i] = parser.CloneWord(w)
 	}
 	tmpCmd := &parser.SimpleCmd{Args: expandedWords}
+	expander.SetGlobOptions(expander.GlobOptions{
+		Nullglob:   state.shoptNullglob,
+		Nocaseglob: state.shoptNocaseglob,
+	})
 	expander.Expand(&parser.List{
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
@@ -284,6 +291,10 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout, stderr *os.
 	// Expand the subject word.
 	word := parser.CloneWord(cmd.Word)
 	tmpCmd := &parser.SimpleCmd{Args: []lexer.Word{word}}
+	expander.SetGlobOptions(expander.GlobOptions{
+		Nullglob:   state.shoptNullglob,
+		Nocaseglob: state.shoptNocaseglob,
+	})
 	expander.Expand(&parser.List{
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
@@ -325,6 +336,10 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout, stderr 
 		expandedWords[i] = parser.CloneWord(w)
 	}
 	tmpCmd := &parser.SimpleCmd{Args: expandedWords}
+	expander.SetGlobOptions(expander.GlobOptions{
+		Nullglob:   state.shoptNullglob,
+		Nocaseglob: state.shoptNocaseglob,
+	})
 	expander.Expand(&parser.List{
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},

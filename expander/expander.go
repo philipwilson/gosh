@@ -15,6 +15,7 @@
 package expander
 
 import (
+	"fmt"
 	"gosh/lexer"
 	"gosh/parser"
 	"os/user"
@@ -22,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // LookupFunc returns the value for a variable name. It should
@@ -47,6 +49,23 @@ type IsSetFunc func(name string) bool
 // IsAssocFunc returns true if the named variable is an associative array.
 // Used to skip arithmetic evaluation for associative array subscripts.
 type IsAssocFunc func(name string) bool
+
+// GlobOptions controls glob expansion behavior (set via shopt).
+type GlobOptions struct {
+	Nullglob   bool    // unmatched globs expand to nothing
+	Failglob   bool    // unmatched globs are errors
+	Nocaseglob bool    // case-insensitive globbing
+	FailErr    *string // set when failglob triggers; executor checks this
+}
+
+// activeGlobOpts holds the current GlobOptions during Expand.
+// Set via SetGlobOptions before calling Expand.
+var activeGlobOpts GlobOptions
+
+// SetGlobOptions sets the glob options for the next Expand call.
+func SetGlobOptions(opts GlobOptions) {
+	activeGlobOpts = opts
+}
 
 // Expand walks the AST and performs all expansion phases.
 // It modifies the AST in place. lookupArray, isSet, and isAssoc may be nil.
@@ -314,8 +333,8 @@ func expandCmdSubstInWord(w lexer.Word, subst SubstFunc) lexer.Word {
 
 // expandGlobsInArgs processes a list of arg words, expanding any
 // that contain unquoted glob metacharacters into multiple words
-// (one per matching file). Words without globs, or globs that
-// match nothing, are kept as-is.
+// (one per matching file). Behavior for unmatched globs depends
+// on activeGlobOpts (nullglob, failglob, nocaseglob).
 func expandGlobsInArgs(args []lexer.Word) []lexer.Word {
 	var result []lexer.Word
 
@@ -326,9 +345,22 @@ func expandGlobsInArgs(args []lexer.Word) []lexer.Word {
 		}
 
 		pattern := buildGlobPattern(w)
-		matches, err := filepath.Glob(pattern)
+		var matches []string
+		var err error
+		if activeGlobOpts.Nocaseglob {
+			matches, err = caseInsensitiveGlob(pattern)
+		} else {
+			matches, err = filepath.Glob(pattern)
+		}
 		if err != nil || len(matches) == 0 {
-			// No matches or bad pattern: keep original word.
+			if activeGlobOpts.Failglob && activeGlobOpts.FailErr != nil {
+				*activeGlobOpts.FailErr = fmt.Sprintf("no match: %s", wordToString(w))
+				return result
+			}
+			if activeGlobOpts.Nullglob {
+				continue // remove word
+			}
+			// Default: keep original word as literal.
 			result = append(result, w)
 			continue
 		}
@@ -342,6 +374,56 @@ func expandGlobsInArgs(args []lexer.Word) []lexer.Word {
 	}
 
 	return result
+}
+
+// wordToString returns the flat string for a word (for error messages).
+func wordToString(w lexer.Word) string {
+	var sb strings.Builder
+	for _, p := range w {
+		sb.WriteString(p.Text)
+	}
+	return sb.String()
+}
+
+// caseInsensitiveGlob performs case-insensitive glob matching by
+// transforming each letter in the pattern to a character class [aA].
+// Characters inside existing [...] brackets are left as-is.
+func caseInsensitiveGlob(pattern string) ([]string, error) {
+	var sb strings.Builder
+	inBracket := false
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if ch == '\\' && i+1 < len(runes) {
+			sb.WriteRune(ch)
+			i++
+			sb.WriteRune(runes[i])
+			continue
+		}
+		if ch == '[' && !inBracket {
+			inBracket = true
+			sb.WriteRune(ch)
+			continue
+		}
+		if ch == ']' && inBracket {
+			inBracket = false
+			sb.WriteRune(ch)
+			continue
+		}
+		if !inBracket && unicode.IsLetter(ch) {
+			lo := unicode.ToLower(ch)
+			up := unicode.ToUpper(ch)
+			if lo != up {
+				sb.WriteRune('[')
+				sb.WriteRune(lo)
+				sb.WriteRune(up)
+				sb.WriteRune(']')
+				continue
+			}
+		}
+		sb.WriteRune(ch)
+	}
+	return filepath.Glob(sb.String())
 }
 
 // hasUnquotedGlob returns true if the word contains any unquoted

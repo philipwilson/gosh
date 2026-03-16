@@ -69,6 +69,9 @@ type shellState struct {
 	optNounset       bool                 // set -u: error on unset variables
 	optXtrace        bool                 // set -x: print commands before execution
 	optPipefail      bool                 // set -o pipefail: pipeline fails if any command fails
+	shoptNullglob    bool                 // shopt -s nullglob: unmatched globs expand to nothing
+	shoptFailglob    bool                 // shopt -s failglob: unmatched globs are errors
+	shoptNocaseglob  bool                 // shopt -s nocaseglob: case-insensitive globbing
 	noErrexit        int                  // >0 suppresses errexit (condition contexts, &&/|| LHS)
 	nounsetError     bool                 // set when a nounset violation occurs during expansion
 	readonlyError    bool                 // set when a readonly assignment is attempted
@@ -172,6 +175,9 @@ func (s *shellState) clone() *shellState {
 		optNounset:       s.optNounset,
 		optXtrace:        s.optXtrace,
 		optPipefail:      s.optPipefail,
+		shoptNullglob:    s.shoptNullglob,
+		shoptFailglob:    s.shoptFailglob,
+		shoptNocaseglob:  s.shoptNocaseglob,
 		termFd:           s.termFd,
 		startTime:        s.startTime,
 	}

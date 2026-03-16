@@ -433,6 +433,27 @@ var helpEntries = map[string]builtinHelp{
     Exit Status:
     Returns 0 unless an invalid option is given.`,
 	},
+	"shopt": {
+		Synopsis: "shopt [-su] [optname ...]",
+		Desc: `Set and unset shell options.
+
+    Without options, display all shell options with their status.
+
+    Options:
+      -s    Enable (set) each named option
+      -u    Disable (unset) each named option
+
+    Available options:
+      failglob     Non-matching globs produce an error
+      nocaseglob   Case-insensitive pathname expansion
+      nullglob     Non-matching globs expand to nothing
+
+    Without -s or -u, show the value of each named option
+    and return 1 if any is off.
+
+    Exit Status:
+    Returns 0 unless an invalid option name is given.`,
+	},
 	"shift": {
 		Synopsis: "shift [n]",
 		Desc: `Shift positional parameters.

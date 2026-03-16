@@ -44,8 +44,25 @@ func execList(state *shellState, list *parser.List, stdin, stdout, stderr *os.Fi
 
 		// Expand this entry just before execution.
 		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
+		var failErr string
+		expander.SetGlobOptions(expander.GlobOptions{
+			Nullglob:   state.shoptNullglob,
+			Failglob:   state.shoptFailglob,
+			Nocaseglob: state.shoptNocaseglob,
+			FailErr:    &failErr,
+		})
 		expander.Expand(singleList, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet, state.isAssoc)
 		list.Entries[i] = singleList.Entries[0]
+
+		// Check for failglob error during expansion.
+		if failErr != "" {
+			fmt.Fprintf(stderr, "gosh: %s\n", failErr)
+			state.lastStatus = 1
+			if suppressErrexit {
+				state.noErrexit--
+			}
+			continue
+		}
 
 		// Check for nounset error during expansion.
 		if state.nounsetError {

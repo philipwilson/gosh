@@ -52,6 +52,7 @@ var builtins = map[string]builtinFunc{
 	"debug-expanded":  builtinDebugExpanded,
 	"history":         builtinHistory,
 	"set":             builtinSet,
+	"shopt":           builtinShopt,
 	"wait":            builtinWait,
 	"kill":            builtinKill,
 	"disown":          builtinDisown,
@@ -1619,6 +1620,91 @@ func printSetOptions(state *shellState, stdout *os.File) {
 		}
 		fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
 	}
+}
+
+// builtinShopt implements the shopt builtin for shell options.
+// shopt alone lists all options. shopt -s name enables, shopt -u name disables.
+// shopt name shows value and returns 1 if off.
+func builtinShopt(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	type shoptEntry struct {
+		name string
+		val  *bool
+	}
+	opts := []shoptEntry{
+		{"failglob", &state.shoptFailglob},
+		{"nocaseglob", &state.shoptNocaseglob},
+		{"nullglob", &state.shoptNullglob},
+	}
+
+	if len(args) == 0 {
+		// List all options.
+		for _, o := range opts {
+			onOff := "off"
+			if *o.val {
+				onOff = "on"
+			}
+			fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+		}
+		return 0
+	}
+
+	findOpt := func(name string) *shoptEntry {
+		for i := range opts {
+			if opts[i].name == name {
+				return &opts[i]
+			}
+		}
+		return nil
+	}
+
+	flag := args[0]
+	if flag == "-s" || flag == "-u" {
+		enable := flag == "-s"
+		if len(args) < 2 {
+			// List options matching the state.
+			for _, o := range opts {
+				if *o.val == enable {
+					onOff := "off"
+					if *o.val {
+						onOff = "on"
+					}
+					fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+				}
+			}
+			return 0
+		}
+		status := 0
+		for _, name := range args[1:] {
+			o := findOpt(name)
+			if o == nil {
+				fmt.Fprintf(stderr, "gosh: shopt: %s: invalid shell option name\n", name)
+				status = 1
+				continue
+			}
+			*o.val = enable
+		}
+		return status
+	}
+
+	// shopt name — show value, return 1 if off.
+	status := 0
+	for _, name := range args {
+		o := findOpt(name)
+		if o == nil {
+			fmt.Fprintf(stderr, "gosh: shopt: %s: invalid shell option name\n", name)
+			status = 1
+			continue
+		}
+		onOff := "off"
+		if *o.val {
+			onOff = "on"
+		}
+		fmt.Fprintf(stdout, "%-15s %s\n", o.name, onOff)
+		if !*o.val {
+			status = 1
+		}
+	}
+	return status
 }
 
 // parseJobSpec parses a job specifier like "%1" and returns the job ID.

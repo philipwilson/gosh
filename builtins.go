@@ -221,18 +221,27 @@ func builtinLocal(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 		return 1
 	}
 
-	// Check for -a flag (declare local array).
+	// Check for -a / -A flag.
 	declareArray := false
+	declareAssoc := false
 	startIdx := 0
 	if len(args) > 0 && args[0] == "-a" {
 		declareArray = true
+		startIdx = 1
+	} else if len(args) > 0 && args[0] == "-A" {
+		declareAssoc = true
 		startIdx = 1
 	}
 
 	for _, arg := range args[startIdx:] {
 		name, value, hasValue := strings.Cut(arg, "=")
-		saveLocalVar(state, name, declareArray)
-		if declareArray {
+		saveLocalVar(state, name, declareArray || declareAssoc)
+		if declareAssoc {
+			state.attrs[name] |= attrAssoc
+			if !hasValue {
+				state.setAssocArray(name, make(map[string]string))
+			}
+		} else if declareArray {
 			if !hasValue {
 				state.setArray(name, nil)
 			}
@@ -253,7 +262,13 @@ func saveLocalVar(state *shellState, name string, isArray bool) {
 	if _, already := scope[name]; already {
 		return
 	}
-	if arr, isArr := state.arrays[name]; isArr {
+	if m, ok := state.assocArrays[name]; ok {
+		cp := make(map[string]string, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		scope[name] = savedVar{exists: true, isAssoc: true, assocVal: cp, attrs: state.attrs[name]}
+	} else if arr, isArr := state.arrays[name]; isArr {
 		cp := make([]string, len(arr))
 		copy(cp, arr)
 		scope[name] = savedVar{exists: true, isArray: true, arrayVal: cp, attrs: state.attrs[name]}
@@ -997,6 +1012,8 @@ func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.
 	var setFlags, clearFlags uint8
 	printMode := false
 	declareArray := false
+	declareAssoc := false
+	declareGlobal := false
 	i := 0
 	for i < len(args) {
 		arg := args[i]
@@ -1012,6 +1029,14 @@ func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.
 				} else {
 					declareArray = true
 				}
+			case 'A':
+				if prefix == '+' {
+					fmt.Fprintln(stderr, "gosh: declare: cannot remove associative array attribute")
+					return 1
+				}
+				declareAssoc = true
+			case 'g':
+				declareGlobal = true
 			case 'i':
 				if prefix == '-' {
 					setFlags |= attrInteger
@@ -1041,8 +1066,14 @@ func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.
 	}
 	remaining := args[i:]
 
+	// Validate conflicting flags.
+	if declareArray && declareAssoc {
+		fmt.Fprintln(stderr, "gosh: declare: cannot use -a and -A simultaneously")
+		return 1
+	}
+
 	// Print mode or no args: list variables.
-	if printMode || (len(remaining) == 0 && setFlags == 0 && clearFlags == 0 && !declareArray) {
+	if printMode || (len(remaining) == 0 && setFlags == 0 && clearFlags == 0 && !declareArray && !declareAssoc) {
 		return declarePrint(state, remaining, stdout)
 	}
 
@@ -1051,15 +1082,22 @@ func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.
 	for _, arg := range remaining {
 		name, value, hasValue := strings.Cut(arg, "=")
 
-		if inFunction {
-			saveLocalVar(state, name, declareArray)
+		if inFunction && !declareGlobal {
+			saveLocalVar(state, name, declareArray || declareAssoc)
 		}
 
 		// Set non-readonly attributes first (so integer evaluation kicks in).
 		// Readonly is deferred until after value is set.
 		state.attrs[name] = (state.attrs[name] | (setFlags &^ attrReadonly)) &^ clearFlags
 
-		if declareArray {
+		if declareAssoc {
+			state.attrs[name] |= attrAssoc
+			if !hasValue {
+				if _, exists := state.assocArrays[name]; !exists {
+					state.setAssocArray(name, make(map[string]string))
+				}
+			}
+		} else if declareArray {
 			if !hasValue {
 				if _, exists := state.arrays[name]; !exists {
 					state.setArray(name, nil)
@@ -1072,7 +1110,9 @@ func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.
 			// If the variable doesn't exist, create it as empty.
 			if _, ok := state.vars[name]; !ok {
 				if _, ok := state.arrays[name]; !ok {
-					state.vars[name] = ""
+					if _, ok := state.assocArrays[name]; !ok {
+						state.vars[name] = ""
+					}
 				}
 			}
 		}
@@ -1090,13 +1130,19 @@ func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.
 func declarePrint(state *shellState, names []string, stdout *os.File) int {
 	if len(names) == 0 {
 		// Print all variables with attributes.
-		allNames := make([]string, 0, len(state.vars)+len(state.arrays))
+		allNames := make([]string, 0, len(state.vars)+len(state.arrays)+len(state.assocArrays))
 		seen := make(map[string]bool)
 		for k := range state.vars {
 			allNames = append(allNames, k)
 			seen[k] = true
 		}
 		for k := range state.arrays {
+			if !seen[k] {
+				allNames = append(allNames, k)
+				seen[k] = true
+			}
+		}
+		for k := range state.assocArrays {
 			if !seen[k] {
 				allNames = append(allNames, k)
 			}
@@ -1113,6 +1159,8 @@ func declarePrint(state *shellState, names []string, stdout *os.File) int {
 		if _, ok := state.vars[name]; ok {
 			printDeclare(state, name, stdout)
 		} else if _, ok := state.arrays[name]; ok {
+			printDeclare(state, name, stdout)
+		} else if _, ok := state.assocArrays[name]; ok {
 			printDeclare(state, name, stdout)
 		} else {
 			fmt.Fprintf(os.Stderr, "gosh: declare: %s: not found\n", name)
@@ -1140,6 +1188,16 @@ func printDeclare(state *shellState, name string, stdout *os.File) {
 		flags.WriteByte('r')
 		hasFlags = true
 	}
+	if m, ok := state.assocArrays[name]; ok {
+		if hasFlags {
+			flags.WriteByte('A')
+		} else {
+			flags.Reset()
+			flags.WriteString("-A")
+		}
+		fmt.Fprintf(stdout, "declare %s %s=%s\n", flags.String(), name, formatAssocArrayValue(m))
+		return
+	}
 	if arr, ok := state.arrays[name]; ok {
 		if hasFlags {
 			flags.WriteByte('a')
@@ -1166,6 +1224,29 @@ func formatArrayValue(arr []string) string {
 			sb.WriteByte(' ')
 		}
 		sb.WriteString(strconv.Quote(v))
+	}
+	sb.WriteByte(')')
+	return sb.String()
+}
+
+// formatAssocArrayValue formats an associative array as ([k1]="v1" [k2]="v2")
+// with keys sorted alphabetically.
+func formatAssocArrayValue(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	sb.WriteByte('(')
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteByte('[')
+		sb.WriteString(k)
+		sb.WriteString("]=")
+		sb.WriteString(strconv.Quote(m[k]))
 	}
 	sb.WriteByte(')')
 	return sb.String()

@@ -694,15 +694,17 @@ func (p *parser) expectWord(word string) bool {
 // non-assignment word, following bash semantics.
 func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 	cmd := &SimpleCmd{}
-	seenArg := false // once true, no more assignments
+	seenArg := false // once true, no more assignments (unless declCmd)
+	declCmd := false  // true when the command is a declaration builtin
 
 	for {
 		tok := p.peek()
 
 		switch tok.Type {
 		case lexer.TOKEN_WORD:
-			// Check for assignment before any command word.
-			if !seenArg {
+			// Check for assignment before any command word, or after
+			// a declaration builtin (declare, typeset, local, export, readonly).
+			if !seenArg || declCmd {
 				if assign, ok := splitAssignment(tok.Parts); ok {
 					p.next()
 					// Check for array assignment: name=( or name+=(
@@ -726,13 +728,35 @@ func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 						p.next() // consume )
 						assign.Array = elems
 					}
-					cmd.Assigns = append(cmd.Assigns, assign)
+					if declCmd {
+						if assign.Array != nil {
+							// Array assignment after declaration builtin:
+							// store in Assigns for the executor, and add
+							// bare name to Args so the builtin can set
+							// attributes on it.
+							cmd.Assigns = append(cmd.Assigns, assign)
+							cmd.Args = append(cmd.Args, lexer.Word{{Text: assign.Name, Quote: lexer.Unquoted}})
+						} else {
+							// Scalar assignment: re-emit as an arg word
+							// so the builtin sees "name=value" in its
+							// args list.
+							cmd.Args = append(cmd.Args, tok.Parts)
+						}
+					} else {
+						cmd.Assigns = append(cmd.Assigns, assign)
+					}
 					continue
 				}
 			}
 			p.next()
 			cmd.Args = append(cmd.Args, tok.Parts)
-			seenArg = true
+			if !seenArg {
+				seenArg = true
+				// Check if this is a declaration builtin.
+				if isDeclarationBuiltin(tok.Val) {
+					declCmd = true
+				}
+			}
 
 		case lexer.TOKEN_LT:
 			r, err := p.parseRedirect(REDIR_IN)
@@ -1008,6 +1032,16 @@ tryPlainAssign:
 	value = append(value, w[1:]...)
 
 	return Assignment{Name: lhs, Value: value}, true
+}
+
+// isDeclarationBuiltin returns true if the command name is a declaration
+// builtin whose arguments should be parsed as potential assignments.
+func isDeclarationBuiltin(name string) bool {
+	switch name {
+	case "declare", "typeset", "local", "export", "readonly":
+		return true
+	}
+	return false
 }
 
 func isValidName(s string) bool {

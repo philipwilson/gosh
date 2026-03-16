@@ -44,7 +44,7 @@ func execList(state *shellState, list *parser.List, stdin, stdout, stderr *os.Fi
 
 		// Expand this entry just before execution.
 		singleList := &parser.List{Entries: []parser.ListEntry{list.Entries[i]}}
-		expander.Expand(singleList, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet)
+		expander.Expand(singleList, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet, state.isAssoc)
 		list.Entries[i] = singleList.Entries[0]
 
 		// Check for nounset error during expansion.
@@ -510,10 +510,20 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, stderr 
 
 	// Check for builtins.
 	if fn, ok := builtins[args[0]]; ok {
+		// For declaration builtins (declare, typeset, local, export,
+		// readonly), array assignments from cmd.Assigns are permanent
+		// and executed AFTER the builtin (so attributes are set first).
+		isDecl := isDeclBuiltin(args[0])
+		var declAssigns []parser.Assignment
+
 		// Per-command assignments are temporary for builtins:
 		// save old values, set new ones, run, then restore.
 		saved := make(map[string]savedVar, len(cmd.Assigns))
 		for _, a := range cmd.Assigns {
+			if isDecl && a.Array != nil {
+				declAssigns = append(declAssigns, a)
+				continue
+			}
 			saveVarState(state, saved, a.Name)
 			execAssignment(state, a, stderr)
 		}
@@ -528,6 +538,12 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, stderr 
 		status := fn(state, args[1:], fds[0], fds[1], fds[2])
 		for _, f := range opened {
 			f.Close()
+		}
+
+		// Execute deferred array assignments after the builtin has
+		// set attributes (e.g., -A for associative).
+		for _, a := range declAssigns {
+			execAssignment(state, a, stderr)
 		}
 
 		restoreVars(state, saved)
@@ -673,7 +689,29 @@ func execFunction(state *shellState, body *parser.List, args []string, stdin, st
 // and indexed assignments.
 func execAssignment(state *shellState, a parser.Assignment, stderr *os.File) {
 	if a.Array != nil {
-		// Array assignment: arr=(a b c) or arr+=(x y)
+		// Associative array assignment: map=([k1]=v1 [k2]=v2)
+		if state.isAssoc(a.Name) {
+			m := make(map[string]string)
+			if a.Append {
+				// Copy existing entries for +=.
+				if existing, ok := state.assocArrays[a.Name]; ok {
+					for k, v := range existing {
+						m[k] = v
+					}
+				}
+			}
+			for _, w := range a.Array {
+				s := w.String()
+				if key, value, ok := parseAssocElement(s); ok {
+					// Expand $vars in the key.
+					key = expander.ExpandDollar(key, state.lookup)
+					m[key] = value
+				}
+			}
+			state.setAssocArray(a.Name, m)
+			return
+		}
+		// Indexed array assignment: arr=(a b c) or arr+=(x y)
 		var vals []string
 		for _, w := range a.Array {
 			vals = append(vals, w.String())
@@ -686,6 +724,12 @@ func execAssignment(state *shellState, a parser.Assignment, stderr *os.File) {
 		return
 	}
 	if a.Index != "" {
+		// Associative array element: map[key]=val
+		if state.isAssoc(a.Name) {
+			subscript := expander.ExpandDollar(a.Index, state.lookup)
+			state.setVar(a.Name+"["+subscript+"]", a.Value.String())
+			return
+		}
 		// Indexed assignment: arr[expr]=val
 		// Evaluate subscript as arithmetic.
 		subscript := expander.ExpandDollar(a.Index, state.lookup)
@@ -717,6 +761,8 @@ type savedVar struct {
 	exists   bool
 	isArray  bool
 	arrayVal []string
+	isAssoc  bool
+	assocVal map[string]string
 	attrs    uint8
 }
 
@@ -733,18 +779,30 @@ func restoreVars(state *shellState, saved map[string]savedVar) {
 		} else {
 			delete(state.attrs, name)
 		}
-		if sv.isArray {
+		if sv.isAssoc {
+			if sv.exists {
+				state.assocArrays[name] = sv.assocVal
+			} else {
+				delete(state.assocArrays, name)
+			}
+			// Clean up other storage types.
+			delete(state.arrays, name)
+			delete(state.vars, name)
+		} else if sv.isArray {
 			if sv.exists {
 				state.arrays[name] = sv.arrayVal
 			} else {
 				delete(state.arrays, name)
 			}
+			delete(state.assocArrays, name)
 		} else {
 			if sv.exists {
 				state.vars[name] = sv.value
 			} else {
 				delete(state.vars, name)
 			}
+			delete(state.assocArrays, name)
+			delete(state.arrays, name)
 		}
 	}
 }
@@ -755,7 +813,13 @@ func saveVarState(state *shellState, saved map[string]savedVar, name string) {
 	if _, already := saved[name]; already {
 		return
 	}
-	if arr, isArr := state.arrays[name]; isArr {
+	if m, ok := state.assocArrays[name]; ok {
+		cp := make(map[string]string, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		saved[name] = savedVar{exists: true, isAssoc: true, assocVal: cp, attrs: state.attrs[name]}
+	} else if arr, isArr := state.arrays[name]; isArr {
 		cp := make([]string, len(arr))
 		copy(cp, arr)
 		saved[name] = savedVar{exists: true, isArray: true, arrayVal: cp, attrs: state.attrs[name]}
@@ -763,4 +827,27 @@ func saveVarState(state *shellState, saved map[string]savedVar, name string) {
 		old, exists := state.vars[name]
 		saved[name] = savedVar{value: old, exists: exists, attrs: state.attrs[name]}
 	}
+}
+
+// isDeclBuiltin returns true if the command name is a declaration builtin
+// whose array assignments should be processed after the builtin runs.
+func isDeclBuiltin(name string) bool {
+	switch name {
+	case "declare", "typeset", "local", "export", "readonly":
+		return true
+	}
+	return false
+}
+
+// parseAssocElement parses an associative array element like "[key]=value".
+// Returns the key and value, or ok=false if the string is not in that format.
+func parseAssocElement(s string) (key, value string, ok bool) {
+	if !strings.HasPrefix(s, "[") {
+		return "", "", false
+	}
+	idx := strings.Index(s, "]=")
+	if idx < 0 {
+		return "", "", false
+	}
+	return s[1:idx], s[idx+2:], true
 }

@@ -27,6 +27,14 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, std
 		copy(cp, v)
 		savedArrays[k] = cp
 	}
+	savedAssocArrays := make(map[string]map[string]string, len(state.assocArrays))
+	for k, m := range state.assocArrays {
+		cp := make(map[string]string, len(m))
+		for mk, mv := range m {
+			cp[mk] = mv
+		}
+		savedAssocArrays[k] = cp
+	}
 	savedAttrs := make(map[string]uint8, len(state.attrs))
 	for k, v := range state.attrs {
 		savedAttrs[k] = v
@@ -60,6 +68,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, std
 	// Restore shell state.
 	state.vars = savedVars
 	state.arrays = savedArrays
+	state.assocArrays = savedAssocArrays
 	state.attrs = savedAttrs
 	state.funcs = savedFuncs
 	state.aliases = savedAliases
@@ -212,7 +221,7 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout, stderr *os.Fi
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet)
+	}, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet, state.isAssoc)
 
 	// Collect the expanded arg strings.
 	values := tmpCmd.ArgStrings()
@@ -314,7 +323,7 @@ func execCase(state *shellState, cmd *parser.CaseCmd, stdin, stdout, stderr *os.
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet)
+	}, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet, state.isAssoc)
 	subject := tmpCmd.ArgStrings()[0]
 
 	for _, clause := range cmd.Clauses {
@@ -355,7 +364,7 @@ func execSelect(state *shellState, cmd *parser.SelectCmd, stdin, stdout, stderr 
 		Entries: []parser.ListEntry{{
 			Pipeline: &parser.Pipeline{Cmds: []parser.Command{tmpCmd}},
 		}},
-	}, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet)
+	}, state.lookupNounset, state.cmdSubst, state.setVar, state.lookupArray, state.isVarSet, state.isAssoc)
 	values := tmpCmd.ArgStrings()
 
 	if len(values) == 0 {

@@ -44,11 +44,19 @@ type LookupArrayFunc func(name string) ([]string, bool)
 // expansion operators like ${var:-default} provide fallback values.
 type IsSetFunc func(name string) bool
 
+// IsAssocFunc returns true if the named variable is an associative array.
+// Used to skip arithmetic evaluation for associative array subscripts.
+type IsAssocFunc func(name string) bool
+
 // Expand walks the AST and performs all expansion phases.
-// It modifies the AST in place. lookupArray and isSet may be nil.
-func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) {
+// It modifies the AST in place. lookupArray, isSet, and isAssoc may be nil.
+func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc, isAssoc ...IsAssocFunc) {
+	var assocFn IsAssocFunc
+	if len(isAssoc) > 0 {
+		assocFn = isAssoc[0]
+	}
 	for i := range list.Entries {
-		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar, lookupArray, isSet)
+		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar, lookupArray, isSet, assocFn)
 	}
 }
 
@@ -65,11 +73,11 @@ func expandRedirects(redirs []parser.Redirect, lookup LookupFunc, subst SubstFun
 	}
 }
 
-func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) {
+func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc, isAssoc IsAssocFunc) {
 	for _, cmd := range pipe.Cmds {
 		switch c := cmd.(type) {
 		case *parser.SimpleCmd:
-			expandCommand(c, lookup, subst, setVar, lookupArray, isSet)
+			expandCommand(c, lookup, subst, setVar, lookupArray, isSet, isAssoc)
 		case *parser.IfCmd:
 			// IfCmd branches are expanded lazily by the executor.
 			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
@@ -101,7 +109,7 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, s
 	}
 }
 
-func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) {
+func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc, isAssoc IsAssocFunc) {
 	// Phase 0: brace expansion on args only.
 	cmd.Args = expandBracesInArgs(cmd.Args)
 
@@ -151,19 +159,19 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 
 	// Phase 3: variable expansion on all words.
 	for i := range cmd.Assigns {
-		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup, isSet)
+		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup, isSet, isAssoc)
 		for j := range cmd.Assigns[i].Array {
-			cmd.Assigns[i].Array[j] = expandVarsInWord(cmd.Assigns[i].Array[j], lookup, isSet)
+			cmd.Assigns[i].Array[j] = expandVarsInWord(cmd.Assigns[i].Array[j], lookup, isSet, isAssoc)
 		}
 	}
 	// For args, "${arr[@]}" and "$@" in double quotes may produce multiple words.
 	var newArgs []lexer.Word
 	for _, arg := range cmd.Args {
-		newArgs = append(newArgs, expandVarsInWordMulti(arg, lookup, lookupArray, isSet)...)
+		newArgs = append(newArgs, expandVarsInWordMulti(arg, lookup, lookupArray, isSet, isAssoc)...)
 	}
 	cmd.Args = newArgs
 	for i := range cmd.Redirects {
-		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup, isSet)
+		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup, isSet, isAssoc)
 	}
 
 	// Phase 3.5: word splitting on args only (not assignments or redirects).

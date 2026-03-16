@@ -111,6 +111,7 @@ func cloneShellState(state *shellState) *shellState {
 	s := &shellState{
 		vars:             make(map[string]string, len(state.vars)),
 		arrays:           make(map[string][]string, len(state.arrays)),
+		assocArrays:      make(map[string]map[string]string, len(state.assocArrays)),
 		attrs:            make(map[string]uint8, len(state.attrs)),
 		aliases:          make(map[string]string, len(state.aliases)),
 		funcs:            make(map[string]*parser.List, len(state.funcs)),
@@ -134,6 +135,13 @@ func cloneShellState(state *shellState) *shellState {
 		cp := make([]string, len(v))
 		copy(cp, v)
 		s.arrays[k] = cp
+	}
+	for k, m := range state.assocArrays {
+		cp := make(map[string]string, len(m))
+		for mk, mv := range m {
+			cp[mk] = mv
+		}
+		s.assocArrays[k] = cp
 	}
 	for k, v := range state.attrs {
 		s.attrs[k] = v

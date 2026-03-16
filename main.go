@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,14 +30,16 @@ const (
 	attrExport   uint8 = 1 << 0 // -x: export to children
 	attrReadonly uint8 = 1 << 1 // -r: readonly
 	attrInteger  uint8 = 1 << 2 // -i: integer
+	attrAssoc    uint8 = 1 << 3 // -A: associative array
 )
 
 // shellState holds the shell's mutable state: variables, export
 // set, last exit status, and terminal control info.
 type shellState struct {
-	vars             map[string]string       // shell variables
-	arrays           map[string][]string     // indexed arrays
-	attrs            map[string]uint8        // variable attributes (export, readonly, integer)
+	vars             map[string]string              // shell variables
+	arrays           map[string][]string          // indexed arrays
+	assocArrays      map[string]map[string]string // associative arrays
+	attrs            map[string]uint8             // variable attributes (export, readonly, integer, assoc)
 	aliases          map[string]string       // alias name → replacement text
 	funcs            map[string]*parser.List // user-defined functions
 	lastStatus       int                  // $? — exit status of last command
@@ -75,12 +78,13 @@ type shellState struct {
 
 func newShellState() *shellState {
 	s := &shellState{
-		vars:    make(map[string]string),
-		arrays:  make(map[string][]string),
-		attrs:   make(map[string]uint8),
-		aliases: make(map[string]string),
-		funcs:   make(map[string]*parser.List),
-		termFd:  int(os.Stdin.Fd()),
+		vars:        make(map[string]string),
+		arrays:      make(map[string][]string),
+		assocArrays: make(map[string]map[string]string),
+		attrs:       make(map[string]uint8),
+		aliases:     make(map[string]string),
+		funcs:       make(map[string]*parser.List),
+		termFd:      int(os.Stdin.Fd()),
 	}
 
 	for _, entry := range os.Environ() {
@@ -180,6 +184,9 @@ func (s *shellState) lookup(name string) string {
 			rest := name[1:]
 			if arrName, subscript, ok := parseArrayRef(rest); ok {
 				if subscript == "@" || subscript == "*" {
+					if m, ok := s.assocArrays[arrName]; ok {
+						return strconv.Itoa(len(m))
+					}
 					count := 0
 					for _, v := range s.arrays[arrName] {
 						if v != "" {
@@ -191,8 +198,53 @@ func (s *shellState) lookup(name string) string {
 			}
 		}
 
+		// Key enumeration: !arr[@] or !arr[*] — return sorted keys.
+		if strings.HasPrefix(name, "!") {
+			rest := name[1:]
+			if arrName, subscript, ok := parseArrayRef(rest); ok {
+				if subscript == "@" || subscript == "*" {
+					if m, ok := s.assocArrays[arrName]; ok {
+						keys := make([]string, 0, len(m))
+						for k := range m {
+							keys = append(keys, k)
+						}
+						sort.Strings(keys)
+						return strings.Join(keys, " ")
+					}
+					// Indexed array key enumeration: return indices of non-empty elements.
+					if arr, ok := s.arrays[arrName]; ok {
+						var indices []string
+						for i, v := range arr {
+							if v != "" {
+								indices = append(indices, strconv.Itoa(i))
+							}
+						}
+						return strings.Join(indices, " ")
+					}
+				}
+			}
+		}
+
 		// Array subscripts: arr[N], arr[@], arr[*]
 		if arrName, subscript, ok := parseArrayRef(name); ok {
+			// Check associative arrays first.
+			if m, ok := s.assocArrays[arrName]; ok {
+				switch subscript {
+				case "@", "*":
+					keys := make([]string, 0, len(m))
+					for k := range m {
+						keys = append(keys, k)
+					}
+					sort.Strings(keys)
+					vals := make([]string, 0, len(m))
+					for _, k := range keys {
+						vals = append(vals, m[k])
+					}
+					return strings.Join(vals, " ")
+				default:
+					return m[subscript]
+				}
+			}
 			arr := s.arrays[arrName]
 			switch subscript {
 			case "@", "*":
@@ -213,7 +265,12 @@ func (s *shellState) lookup(name string) string {
 			}
 		}
 
-		// Bare array name returns element 0.
+		// Bare associative array name returns "" (bash behavior).
+		if _, ok := s.assocArrays[name]; ok {
+			return ""
+		}
+
+		// Bare indexed array name returns element 0.
 		if arr, ok := s.arrays[name]; ok {
 			if len(arr) > 0 {
 				return arr[0]
@@ -251,8 +308,14 @@ func (s *shellState) isVarSet(name string) bool {
 		return n <= len(s.positionalParams)
 	}
 	if arrName, _, ok := parseArrayRef(name); ok {
+		if _, exists := s.assocArrays[arrName]; exists {
+			return true
+		}
 		_, exists := s.arrays[arrName]
 		return exists
+	}
+	if _, ok := s.assocArrays[name]; ok {
+		return true
 	}
 	if _, ok := s.arrays[name]; ok {
 		return true
@@ -286,9 +349,49 @@ func (s *shellState) lookupArray(name string) ([]string, bool) {
 	if name == "@" {
 		return s.positionalParams, true
 	}
+
+	// ${!arrName[@]} — key enumeration for "${!arr[@]}".
+	if strings.HasPrefix(name, "!") {
+		rest := name[1:]
+		if arrName, subscript, ok := parseArrayRef(rest); ok && subscript == "@" {
+			if m, ok := s.assocArrays[arrName]; ok {
+				keys := make([]string, 0, len(m))
+				for k := range m {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				return keys, true
+			}
+			if arr, ok := s.arrays[arrName]; ok {
+				var indices []string
+				for i, v := range arr {
+					if v != "" {
+						indices = append(indices, strconv.Itoa(i))
+					}
+				}
+				return indices, true
+			}
+			return nil, true // empty
+		}
+	}
+
 	// ${arr[@]}
 	if arrName, subscript, ok := parseArrayRef(name); ok {
 		if subscript == "@" {
+			// Associative array.
+			if m, ok := s.assocArrays[arrName]; ok {
+				keys := make([]string, 0, len(m))
+				for k := range m {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				vals := make([]string, 0, len(m))
+				for _, k := range keys {
+					vals = append(vals, m[k])
+				}
+				return vals, true
+			}
+			// Indexed array.
 			arr := s.arrays[arrName]
 			// Filter empty elements (sparse arrays).
 			var live []string
@@ -313,6 +416,9 @@ func (s *shellState) environ() []string {
 		if _, isArray := s.arrays[k]; isArray {
 			continue
 		}
+		if _, isAssoc := s.assocArrays[k]; isAssoc {
+			continue
+		}
 		env = append(env, k+"="+s.vars[k])
 	}
 	return env
@@ -328,11 +434,19 @@ func (s *shellState) setVar(name, value string) {
 		s.startTime = time.Now().Add(-time.Duration(n) * time.Second)
 		return
 	}
-	// Array element assignment: arr[N]=value
+	// Array element assignment: arr[N]=value or arr[key]=value
 	if arrName, subscript, ok := parseArrayRef(name); ok {
 		// Readonly check on the array name.
 		if s.isReadonly(arrName) {
 			fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", arrName)
+			return
+		}
+		// Associative array: use subscript as string key.
+		if s.isAssoc(arrName) {
+			if s.assocArrays[arrName] == nil {
+				s.assocArrays[arrName] = make(map[string]string)
+			}
+			s.assocArrays[arrName][subscript] = value
 			return
 		}
 		idx, err := strconv.Atoi(subscript)
@@ -374,6 +488,11 @@ func (s *shellState) isInteger(name string) bool {
 	return s.attrs[name]&attrInteger != 0
 }
 
+// isAssoc returns true if the variable has the associative array attribute.
+func (s *shellState) isAssoc(name string) bool {
+	return s.attrs[name]&attrAssoc != 0
+}
+
 // evalIntegerValue evaluates a string as an arithmetic expression,
 // returning the result as a string. On error, returns "0".
 func (s *shellState) evalIntegerValue(value string) string {
@@ -403,18 +522,40 @@ func (s *shellState) appendArray(name string, vals []string) {
 	s.arrays[name] = append(s.arrays[name], vals...)
 }
 
+// setAssocArray sets an associative array, replacing any existing value.
+func (s *shellState) setAssocArray(name string, m map[string]string) {
+	if s.isReadonly(name) {
+		fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", name)
+		return
+	}
+	delete(s.arrays, name)
+	delete(s.vars, name)
+	s.assocArrays[name] = m
+}
+
 func (s *shellState) exportVar(name string) {
 	s.attrs[name] |= attrExport
 }
 
 // unsetVar removes a variable. Returns false if the variable is readonly.
 func (s *shellState) unsetVar(name string) bool {
-	// Array element: unset arr[N] sets element to ""
+	// Array element: unset arr[N] or unset arr[key]
 	if arrName, subscript, ok := parseArrayRef(name); ok {
 		if s.isReadonly(arrName) {
 			fmt.Fprintf(os.Stderr, "gosh: unset: %s: readonly variable\n", arrName)
 			return false
 		}
+		// Associative array element.
+		if m, ok := s.assocArrays[arrName]; ok {
+			if subscript == "@" || subscript == "*" {
+				delete(s.assocArrays, arrName)
+				delete(s.attrs, arrName)
+				return true
+			}
+			delete(m, subscript)
+			return true
+		}
+		// Indexed array element.
 		arr := s.arrays[arrName]
 		if subscript == "@" || subscript == "*" {
 			delete(s.arrays, arrName)
@@ -434,6 +575,7 @@ func (s *shellState) unsetVar(name string) bool {
 	}
 	delete(s.vars, name)
 	delete(s.arrays, name)
+	delete(s.assocArrays, name)
 	delete(s.attrs, name)
 	return true
 }

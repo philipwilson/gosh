@@ -779,3 +779,59 @@ func TestDashCNoArg(t *testing.T) {
 		t.Fatalf("unexpected error type: %v", err)
 	}
 }
+
+// --- Compound commands in pipelines ---
+
+func TestForInPipeline(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `for x in c b a; do echo $x; done | sort`)
+	assertOutput(t, got, "a\nb\nc")
+}
+
+func TestIfInPipeline(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `if true; then echo yes; else echo no; fi | tr a-z A-Z`)
+	assertOutput(t, got, "YES")
+}
+
+func TestCaseInPipeline(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `case foo in foo) echo matched;; esac | tr a-z A-Z`)
+	assertOutput(t, got, "MATCHED")
+}
+
+func TestSubshellInPipeline(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `(echo hello) | tr a-z A-Z`)
+	assertOutput(t, got, "HELLO")
+}
+
+func TestCompoundIsolation(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=before; for x in a; do X=after; echo $x; done | cat; echo $X`)
+	assertOutput(t, got, "a\nbefore")
+}
+
+func TestCompoundMidPipeline(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `echo hello | (cat) | tr a-z A-Z`)
+	assertOutput(t, got, "HELLO")
+}
+
+func TestWhileInPipeline(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done | sort -r`)
+	assertOutput(t, got, "2\n1\n0")
+}
+
+func TestPipeIntoWhileRead(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `printf "a\nb\nc\n" | while read x; do echo "[$x]"; done`)
+	assertOutput(t, got, "[a]\n[b]\n[c]")
+}
+
+func TestWhileReadLineContinuation(t *testing.T) {
+	s := testState(t)
+	got := runCaptureWithStdin(t, s, `while read line; do echo "got $line"; done`, "hello\nworld\n")
+	assertOutput(t, got, "got hello\ngot world")
+}

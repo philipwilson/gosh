@@ -118,49 +118,71 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 
 	pgid := 0
 	var pids []int
+	goroutineOwned := make(map[*os.File]bool)
 
 	for i, cmd := range pipe.Cmds {
-		simple, ok := cmd.(*parser.SimpleCmd)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "gosh: compound commands not supported in background pipelines\n")
-			continue
-		}
-
-		var stdin *os.File
+		var sin *os.File
 		if i == 0 {
-			stdin = os.Stdin
+			sin = os.Stdin
 		} else {
-			stdin = pipes[i-1].r
+			sin = pipes[i-1].r
 		}
 
-		var stdout *os.File
+		var sout *os.File
 		if i == n-1 {
-			stdout = os.Stdout
+			sout = os.Stdout
 		} else {
-			stdout = pipes[i].w
+			sout = pipes[i].w
 		}
 
-		fds := [3]*os.File{stdin, stdout, os.Stderr}
-		proc, opened := startProcess(state, simple, fds, pgid)
-		// Close files opened by redirects immediately — the child has
-		// inherited them.
-		for _, f := range opened {
-			f.Close()
-		}
-		if proc == nil {
-			continue
-		}
-		pids = append(pids, proc.Pid)
+		if simple, ok := cmd.(*parser.SimpleCmd); ok {
+			fds := [3]*os.File{sin, sout, os.Stderr}
+			proc, opened := startProcess(state, simple, fds, pgid)
+			// Close files opened by redirects immediately — the child has
+			// inherited them.
+			for _, f := range opened {
+				f.Close()
+			}
+			if proc == nil {
+				continue
+			}
+			pids = append(pids, proc.Pid)
 
-		if i == 0 {
-			pgid = proc.Pid
-			syscall.Setpgid(proc.Pid, proc.Pid)
+			if i == 0 {
+				pgid = proc.Pid
+				syscall.Setpgid(proc.Pid, proc.Pid)
+			}
+		} else {
+			// Compound command: run in goroutine with cloned state.
+			clone := cloneShellState(state)
+			body := cmd
+			cmdIn, cmdOut := sin, sout
+			if i > 0 {
+				goroutineOwned[cmdIn] = true
+			}
+			if i < n-1 {
+				goroutineOwned[cmdOut] = true
+			}
+			go func() {
+				execCommand(clone, body, cmdIn, cmdOut)
+				if i > 0 {
+					cmdIn.Close()
+				}
+				if i < n-1 {
+					cmdOut.Close()
+				}
+			}()
 		}
 	}
 
+	// Close parent-owned pipe ends.
 	for _, p := range pipes {
-		p.r.Close()
-		p.w.Close()
+		if !goroutineOwned[p.r] {
+			p.r.Close()
+		}
+		if !goroutineOwned[p.w] {
+			p.w.Close()
+		}
 	}
 
 	if len(pids) == 0 {
@@ -171,6 +193,8 @@ func execBackground(state *shellState, pipe *parser.Pipeline) {
 	for i, cmd := range pipe.Cmds {
 		if simple, ok := cmd.(*parser.SimpleCmd); ok {
 			cmdParts[i] = strings.Join(simple.ArgStrings(), " ")
+		} else {
+			cmdParts[i] = "<compound>"
 		}
 	}
 	cmdText := strings.Join(cmdParts, " | ")
@@ -211,19 +235,18 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 	}
 
 	type procInfo struct {
-		proc  *os.Process
-		files []*os.File
+		proc       *os.Process
+		files      []*os.File
+		isCompound bool
 	}
 	infos := make([]procInfo, n)
 	pgid := 0
 
-	for i, cmd := range pipe.Cmds {
-		simple, ok := cmd.(*parser.SimpleCmd)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "gosh: compound commands not supported in pipelines\n")
-			continue
-		}
+	var wg sync.WaitGroup
+	compoundStatus := make([]int, n)
+	goroutineOwned := make(map[*os.File]bool)
 
+	for i, cmd := range pipe.Cmds {
 		var sin *os.File
 		if i == 0 {
 			sin = stdin
@@ -238,22 +261,53 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 			sout = pipes[i].w
 		}
 
-		fds := [3]*os.File{sin, sout, os.Stderr}
-		proc, opened := startProcess(state, simple, fds, pgid)
-		infos[i] = procInfo{proc: proc, files: opened}
+		if simple, ok := cmd.(*parser.SimpleCmd); ok {
+			fds := [3]*os.File{sin, sout, os.Stderr}
+			proc, opened := startProcess(state, simple, fds, pgid)
+			infos[i] = procInfo{proc: proc, files: opened}
 
-		if i == 0 && proc != nil {
-			pgid = proc.Pid
-			syscall.Setpgid(proc.Pid, proc.Pid)
-			if foreground {
-				tcsetpgrp(state.termFd, pgid)
+			if i == 0 && proc != nil {
+				pgid = proc.Pid
+				syscall.Setpgid(proc.Pid, proc.Pid)
+				if foreground {
+					tcsetpgrp(state.termFd, pgid)
+				}
 			}
+		} else {
+			// Compound command: run in goroutine with cloned state.
+			infos[i] = procInfo{isCompound: true}
+			clone := cloneShellState(state)
+			idx := i
+			body := cmd
+			cmdIn, cmdOut := sin, sout
+			if i > 0 {
+				goroutineOwned[cmdIn] = true
+			}
+			if i < n-1 {
+				goroutineOwned[cmdOut] = true
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				compoundStatus[idx] = execCommand(clone, body, cmdIn, cmdOut)
+				if idx > 0 {
+					cmdIn.Close()
+				}
+				if idx < n-1 {
+					cmdOut.Close()
+				}
+			}()
 		}
 	}
 
+	// Close parent-owned pipe ends.
 	for _, p := range pipes {
-		p.r.Close()
-		p.w.Close()
+		if !goroutineOwned[p.r] {
+			p.r.Close()
+		}
+		if !goroutineOwned[p.w] {
+			p.w.Close()
+		}
 	}
 
 	var pids []int
@@ -266,7 +320,7 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 	anyStopped := false
 	var lastNonZero int
 	for i, info := range infos {
-		if info.proc == nil {
+		if info.proc == nil || info.isCompound {
 			continue
 		}
 		res := waitProc(info.proc)
@@ -288,6 +342,26 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 		}
 	}
 
+	// Wait for compound command goroutines.
+	wg.Wait()
+
+	// Collect compound command statuses for pipefail.
+	for i, info := range infos {
+		if !info.isCompound {
+			continue
+		}
+		if compoundStatus[i] != 0 {
+			lastNonZero = compoundStatus[i]
+		}
+		if i == n-1 {
+			if state.optPipefail && lastNonZero != 0 {
+				state.lastStatus = lastNonZero
+			} else {
+				state.lastStatus = compoundStatus[i]
+			}
+		}
+	}
+
 	if foreground {
 		tcsetpgrp(state.termFd, state.shellPgid)
 	}
@@ -297,6 +371,8 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 		for i, cmd := range pipe.Cmds {
 			if simple, ok := cmd.(*parser.SimpleCmd); ok {
 				cmdParts[i] = strings.Join(simple.ArgStrings(), " ")
+			} else {
+				cmdParts[i] = "<compound>"
 			}
 		}
 		cmdText := strings.Join(cmdParts, " | ")

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -383,19 +382,24 @@ func builtinRead(state *shellState, args []string, stdin, stdout *os.File) int {
 		}
 	}
 
-	// Read one line from stdin.
-	reader := bufio.NewReader(stdin)
+	// Read one line from stdin, one byte at a time to avoid buffering.
+	// Using bufio.NewReader would read ahead into a 4096-byte buffer,
+	// consuming data that subsequent read calls in a loop would never see.
 	var line string
+	buf := make([]byte, 1)
 	for {
-		segment, err := reader.ReadString('\n')
-		if !raw && strings.HasSuffix(strings.TrimRight(segment, "\n"), "\\") {
-			// Line continuation: strip trailing backslash-newline.
-			segment = strings.TrimRight(segment, "\n")
-			segment = segment[:len(segment)-1]
-			line += segment
-			continue
+		n, err := stdin.Read(buf)
+		if n == 1 {
+			if buf[0] == '\n' {
+				if !raw && strings.HasSuffix(line, "\\") {
+					// Line continuation: strip trailing backslash.
+					line = line[:len(line)-1]
+					continue
+				}
+				break
+			}
+			line += string(buf[0])
 		}
-		line += segment
 		if err != nil {
 			// EOF — process whatever we got.
 			if line == "" {
@@ -403,7 +407,6 @@ func builtinRead(state *shellState, args []string, stdin, stdout *os.File) int {
 			}
 			break
 		}
-		break
 	}
 
 	// Strip trailing newline.

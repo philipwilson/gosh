@@ -62,6 +62,17 @@ func execList(state *shellState, list *parser.List, stdin, stdout, stderr *os.Fi
 			continue
 		}
 
+		// Check for ${var:?msg} error during expansion — abort the shell.
+		if expander.ParamError {
+			expander.ParamError = false
+			state.lastStatus = 127
+			state.exitFlag = true
+			if suppressErrexit {
+				state.noErrexit--
+			}
+			return
+		}
+
 		if state.debugExpanded {
 			fmt.Fprintf(stderr, "  %s\n", list.Entries[i].Pipeline)
 		}
@@ -475,6 +486,13 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout, stderr 
 	if len(cmd.Args) == 0 {
 		for _, a := range cmd.Assigns {
 			execAssignment(state, a, stderr)
+		}
+		if state.readonlyError {
+			state.readonlyError = false
+			if !state.interactive {
+				state.exitFlag = true
+			}
+			return 1
 		}
 		return 0
 	}

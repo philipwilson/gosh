@@ -267,6 +267,7 @@ func runTokensWithIO(state *shellState, tokens []lexer.Token, stdin, stdout, std
 	list, err := parser.Parse(tokens)
 	if err != nil {
 		fmt.Fprintf(stderr, "gosh: %v\n", err)
+		state.lastStatus = 2
 		return false
 	}
 

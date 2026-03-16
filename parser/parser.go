@@ -18,6 +18,10 @@ var reservedWords = map[string]bool{
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
 func Parse(tokens []lexer.Token) (*List, error) {
 	p := &parser{tokens: tokens}
+	// Reject leading literal ';' (newline-generated TOKEN_SEMI has no Val).
+	if p.peek().Type == lexer.TOKEN_SEMI && p.peek().Val == ";" {
+		return nil, fmt.Errorf("syntax error near unexpected token ';'")
+	}
 	return p.parseList()
 }
 

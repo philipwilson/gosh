@@ -71,6 +71,8 @@ type shellState struct {
 	optPipefail      bool                 // set -o pipefail: pipeline fails if any command fails
 	noErrexit        int                  // >0 suppresses errexit (condition contexts, &&/|| LHS)
 	nounsetError     bool                 // set when a nounset violation occurs during expansion
+	readonlyError    bool                 // set when a readonly assignment is attempted
+	paramError       bool                 // set when ${var:?msg} triggers on unset/empty var
 	lastBgPid        int                  // $! — PID of last background command
 	startTime        time.Time            // for $SECONDS
 }
@@ -496,6 +498,7 @@ func (s *shellState) setVar(name, value string) {
 		// Readonly check on the array name.
 		if s.isReadonly(arrName) {
 			fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", arrName)
+			s.readonlyError = true
 			return
 		}
 		// Associative array: use subscript as string key.
@@ -526,6 +529,7 @@ func (s *shellState) setVar(name, value string) {
 	// Readonly check.
 	if s.isReadonly(name) {
 		fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", name)
+		s.readonlyError = true
 		return
 	}
 	// Integer attribute: evaluate value as arithmetic.

@@ -289,7 +289,7 @@ func (l *lexer) lex() ([]Token, error) {
 				l.next()
 				tokens = append(tokens, Token{Type: TOKEN_DSEMI, Fd: -1})
 			} else {
-				tokens = append(tokens, Token{Type: TOKEN_SEMI, Fd: -1})
+				tokens = append(tokens, Token{Type: TOKEN_SEMI, Val: ";", Fd: -1})
 			}
 
 		case ch == '(':

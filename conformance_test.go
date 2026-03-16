@@ -187,7 +187,7 @@ func parameterExpansionCases() []conformanceCase {
 		{"param/alt_empty", `x=; echo ${x:+alt}`, ""},
 		{"param/alt_no_colon_empty", `x=; echo ${x+alt}`, ""},
 		{"param/assign_default", `echo ${x:=hello}; echo $x`, ""},
-		{"param/error_unset", `echo ${x:?oops} 2>/dev/null; echo $?`, "gosh bug: ${x:?msg} should abort the shell with exit 1, not continue"},
+		{"param/error_unset", `echo ${x:?oops} 2>/dev/null; echo $?`, ""},
 
 		// Trimming
 		{"param/trim_prefix_short", `x=abcabc; echo ${x#a*b}`, ""},
@@ -429,7 +429,7 @@ func builtinCases() []conformanceCase {
 
 		// declare
 		{"builtin/declare_i", `declare -i x=2+3; echo $x`, ""},
-		{"builtin/declare_r", `declare -r x=42; x=1 2>/dev/null; echo $?`, "gosh bug: readonly assignment should set exit status 1 and bash -c exits"},
+		{"builtin/declare_r", `declare -r x=42; x=1 2>/dev/null; echo $?`, ""},
 		{"builtin/declare_x", `declare -x MYVAR=hello; env | grep '^MYVAR='`, ""},
 	}
 }
@@ -645,7 +645,7 @@ func miscCases() []conformanceCase {
 		{"misc/multiline_while", fmt.Sprintf("i=0\nwhile [ $i -lt 3 ]\ndo\ni=$((i+1))\necho $i\ndone"), ""},
 
 		// Empty command
-		{"misc/empty_semi", `; echo ok`, "gosh bug: leading semicolon should be a syntax error (bash rejects it)"},
+		{"misc/empty_semi", `; echo ok`, ""},
 
 		// Comments
 		{"misc/comment", `echo hello # this is a comment`, ""},

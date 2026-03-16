@@ -13,6 +13,10 @@ import (
 // for ${var:=word} assignment. Set by Expand, cleared on return.
 var activeSetVar SetFunc
 
+// ParamError is set to true when ${var:?msg} or ${var?msg} triggers.
+// Checked by the executor to abort with exit status 1.
+var ParamError bool
+
 // expandVarsInWord expands $VAR references in a word, respecting quoting.
 // For Unquoted parts, expansion results are marked Expanded (subject to
 // word splitting). For DoubleQuoted parts, results keep DoubleQuoted context.
@@ -557,6 +561,7 @@ func expandParam(content string, lookup LookupFunc, isSet IsSetFunc, isAssoc ...
 					msg = "parameter null or not set"
 				}
 				fmt.Fprintf(os.Stderr, "gosh: %s: %s\n", name, msg)
+				ParamError = true
 				return ""
 			}
 			return value
@@ -567,6 +572,7 @@ func expandParam(content string, lookup LookupFunc, isSet IsSetFunc, isAssoc ...
 					msg = "parameter null or not set"
 				}
 				fmt.Fprintf(os.Stderr, "gosh: %s: %s\n", name, msg)
+				ParamError = true
 				return ""
 			}
 			return value

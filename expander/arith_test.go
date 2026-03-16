@@ -19,13 +19,13 @@ func TestArithBasicOps(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -45,13 +45,13 @@ func TestArithPrecedence(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -74,13 +74,13 @@ func TestArithUnary(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -107,13 +107,13 @@ func TestArithComparison(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -136,13 +136,13 @@ func TestArithLogical(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -162,13 +162,13 @@ func TestArithBitwise(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -187,13 +187,13 @@ func TestArithTernary(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -216,13 +216,13 @@ func TestArithVariables(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, nil)
+		got, err := EvalArith(tt.expr, lookup, nil)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 	}
 }
@@ -239,9 +239,9 @@ func TestArithErrors(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		_, err := evalArith(tt.expr, lookup, nil)
+		_, err := EvalArith(tt.expr, lookup, nil)
 		if err == nil {
-			t.Errorf("evalArith(%q): expected error containing %q, got nil", tt.expr, tt.wantErr)
+			t.Errorf("EvalArith(%q): expected error containing %q, got nil", tt.expr, tt.wantErr)
 			continue
 		}
 	}
@@ -251,9 +251,9 @@ func TestArithNonIntegerVariable(t *testing.T) {
 	vars := map[string]string{"s": "hello"}
 	lookup := func(name string) string { return vars[name] }
 
-	_, err := evalArith("s + 1", lookup, nil)
+	_, err := EvalArith("s + 1", lookup, nil)
 	if err == nil {
-		t.Error("evalArith(\"s + 1\"): expected error for non-integer variable")
+		t.Error("EvalArith(\"s + 1\"): expected error for non-integer variable")
 	}
 }
 
@@ -277,17 +277,17 @@ func TestArithAssignment(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := evalArith(tt.expr, lookup, setVar)
+		got, err := EvalArith(tt.expr, lookup, setVar)
 		if err != nil {
-			t.Errorf("evalArith(%q): unexpected error: %v", tt.expr, err)
+			t.Errorf("EvalArith(%q): unexpected error: %v", tt.expr, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("evalArith(%q) = %d, want %d", tt.expr, got, tt.want)
+			t.Errorf("EvalArith(%q) = %d, want %d", tt.expr, got, tt.want)
 		}
 		for k, v := range tt.wantVars {
 			if vars[k] != v {
-				t.Errorf("evalArith(%q): vars[%q] = %q, want %q", tt.expr, k, vars[k], v)
+				t.Errorf("EvalArith(%q): vars[%q] = %q, want %q", tt.expr, k, vars[k], v)
 			}
 		}
 	}
@@ -299,9 +299,9 @@ func TestArithIncDec(t *testing.T) {
 	setVar := func(name, value string) { vars[name] = value }
 
 	// Pre-increment: ++x returns new value.
-	got, err := evalArith("++x", lookup, setVar)
+	got, err := EvalArith("++x", lookup, setVar)
 	if err != nil {
-		t.Fatalf("evalArith(\"++x\"): %v", err)
+		t.Fatalf("EvalArith(\"++x\"): %v", err)
 	}
 	if got != 6 {
 		t.Errorf("++x = %d, want 6", got)
@@ -311,18 +311,18 @@ func TestArithIncDec(t *testing.T) {
 	}
 
 	// Pre-decrement: --x returns new value.
-	got, err = evalArith("--x", lookup, setVar)
+	got, err = EvalArith("--x", lookup, setVar)
 	if err != nil {
-		t.Fatalf("evalArith(\"--x\"): %v", err)
+		t.Fatalf("EvalArith(\"--x\"): %v", err)
 	}
 	if got != 5 {
 		t.Errorf("--x = %d, want 5", got)
 	}
 
 	// Post-increment: x++ returns old value.
-	got, err = evalArith("x++", lookup, setVar)
+	got, err = EvalArith("x++", lookup, setVar)
 	if err != nil {
-		t.Fatalf("evalArith(\"x++\"): %v", err)
+		t.Fatalf("EvalArith(\"x++\"): %v", err)
 	}
 	if got != 5 {
 		t.Errorf("x++ = %d, want 5 (old value)", got)
@@ -332,9 +332,9 @@ func TestArithIncDec(t *testing.T) {
 	}
 
 	// Post-decrement: x-- returns old value.
-	got, err = evalArith("x--", lookup, setVar)
+	got, err = EvalArith("x--", lookup, setVar)
 	if err != nil {
-		t.Fatalf("evalArith(\"x--\"): %v", err)
+		t.Fatalf("EvalArith(\"x--\"): %v", err)
 	}
 	if got != 6 {
 		t.Errorf("x-- = %d, want 6 (old value)", got)
@@ -350,9 +350,9 @@ func TestArithAssignInExpr(t *testing.T) {
 	setVar := func(name, value string) { vars[name] = value }
 
 	// Assignment in a larger expression.
-	got, err := evalArith("x = 3 + 4", lookup, setVar)
+	got, err := EvalArith("x = 3 + 4", lookup, setVar)
 	if err != nil {
-		t.Fatalf("evalArith: %v", err)
+		t.Fatalf("EvalArith: %v", err)
 	}
 	if got != 7 {
 		t.Errorf("x = 3 + 4 → %d, want 7", got)
@@ -362,9 +362,9 @@ func TestArithAssignInExpr(t *testing.T) {
 	}
 
 	// Chained assignment (right-associative).
-	got, err = evalArith("y = x = 10", lookup, setVar)
+	got, err = EvalArith("y = x = 10", lookup, setVar)
 	if err != nil {
-		t.Fatalf("evalArith: %v", err)
+		t.Fatalf("EvalArith: %v", err)
 	}
 	if got != 10 {
 		t.Errorf("y = x = 10 → %d, want 10", got)

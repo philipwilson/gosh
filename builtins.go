@@ -35,6 +35,7 @@ var builtins = map[string]builtinFunc{
 	"break":           builtinBreak,
 	"continue":        builtinContinue,
 	"return":          builtinReturn,
+	"shift":           builtinShift,
 	"test":            builtinTest,
 	"[":               builtinBracket,
 	"read":            builtinRead,
@@ -172,6 +173,26 @@ func builtinReturn(state *shellState, args []string, stdin, stdout *os.File) int
 	state.returnFlag = true
 	state.lastStatus = status
 	return status
+}
+
+// builtinShift shifts positional parameters to the left by N (default 1).
+// $1 is removed, $2 becomes $1, etc.
+func builtinShift(state *shellState, args []string, stdin, stdout *os.File) int {
+	n := 1
+	if len(args) > 0 {
+		var err error
+		n, err = strconv.Atoi(args[0])
+		if err != nil || n < 0 {
+			fmt.Fprintf(os.Stderr, "gosh: shift: %s: numeric argument required\n", args[0])
+			return 1
+		}
+	}
+	if n > len(state.positionalParams) {
+		fmt.Fprintf(os.Stderr, "gosh: shift: shift count out of range\n")
+		return 1
+	}
+	state.positionalParams = state.positionalParams[n:]
+	return 0
 }
 
 // builtinLocal declares function-scoped variables.

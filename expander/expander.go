@@ -72,6 +72,8 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, s
 			// CaseCmd word, patterns, and body are expanded lazily by the executor.
 		case *parser.FuncDef:
 			// FuncDef body is stored and expanded when the function is called.
+		case *parser.ArithCmd:
+			// ArithCmd expression is expanded at execution time.
 		default:
 			_ = c
 		}
@@ -202,7 +204,7 @@ func expandArithInWord(w lexer.Word, lookup LookupFunc, setVar SetFunc) lexer.Wo
 			continue
 		}
 
-		val, err := evalArith(part.Text, lookup, setVar)
+		val, err := EvalArith(part.Text, lookup, setVar)
 		text := "0"
 		if err == nil {
 			text = strconv.FormatInt(val, 10)
@@ -521,6 +523,12 @@ func buildGlobPattern(w lexer.Word) string {
 // (e.g., to expand a single word for redirect filenames).
 func ExpandWord(w lexer.Word, lookup LookupFunc) string {
 	return expandVarsInWord(w, lookup).String()
+}
+
+// ExpandDollar is the exported version of expandDollar for use by the
+// executor (e.g., to expand $VAR references in arithmetic command expressions).
+func ExpandDollar(text string, lookup LookupFunc) string {
+	return expandDollar(text, lookup)
 }
 
 // expandDollarParts is like expandDollar but returns structured parts:

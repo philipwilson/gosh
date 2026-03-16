@@ -251,6 +251,8 @@ func cloneCommand(c Command) Command {
 			Name: c.Name,
 			Body: CloneList(c.Body),
 		}
+	case *ArithCmd:
+		return &ArithCmd{Expr: c.Expr}
 	default:
 		return c
 	}
@@ -375,6 +377,20 @@ func (c *FuncDef) node()    {}
 func (c *FuncDef) command() {}
 func (c *FuncDef) String() string {
 	return "FuncDef[" + c.Name + " " + c.Body.String() + "]"
+}
+
+// --- ArithCmd ---
+
+// ArithCmd represents: (( expr )) — an arithmetic command.
+// Returns 0 (true) if expr evaluates to non-zero, 1 (false) if zero.
+type ArithCmd struct {
+	Expr string // the arithmetic expression text
+}
+
+func (c *ArithCmd) node()    {}
+func (c *ArithCmd) command() {}
+func (c *ArithCmd) String() string {
+	return "((" + c.Expr + "))"
 }
 
 func (c *IfCmd) node()    {}

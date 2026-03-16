@@ -268,6 +268,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execFor(state, c, stdin, stdout)
 	case *parser.CaseCmd:
 		return execCase(state, c, stdin, stdout)
+	case *parser.ArithCmd:
+		return execArithCmd(state, c)
 	case *parser.FuncDef:
 		state.funcs[c.Name] = c.Body
 		return 0
@@ -275,6 +277,26 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		fmt.Fprintf(os.Stderr, "gosh: unknown command type\n")
 		return 1
 	}
+}
+
+// execArithCmd evaluates a (( expr )) arithmetic command.
+// Returns 0 if the expression result is non-zero, 1 if zero (bash semantics).
+func execArithCmd(state *shellState, cmd *parser.ArithCmd) int {
+	lookup := func(name string) string { return state.lookup(name) }
+	setVar := func(name, value string) { state.vars[name] = value }
+
+	// Expand variables in the expression before evaluation.
+	expr := expander.ExpandDollar(cmd.Expr, lookup)
+
+	val, err := expander.EvalArith(expr, lookup, setVar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: ((%s)): %s\n", cmd.Expr, err)
+		return 1
+	}
+	if val != 0 {
+		return 0
+	}
+	return 1
 }
 
 // execIf evaluates an if/elif/else/fi command. Each condition and

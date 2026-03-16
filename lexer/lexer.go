@@ -92,6 +92,7 @@ const (
 	TOKEN_HERESTRING             // <<< (here string)
 	TOKEN_LPAREN                 // ( (function definition)
 	TOKEN_RPAREN                 // ) (case pattern terminator)
+	TOKEN_ARITH_CMD              // (( expr )) — arithmetic command
 	TOKEN_EOF                    // end of input
 )
 
@@ -127,6 +128,8 @@ func (t TokenType) String() string {
 		return "LPAREN"
 	case TOKEN_RPAREN:
 		return "RPAREN"
+	case TOKEN_ARITH_CMD:
+		return "ARITH_CMD"
 	case TOKEN_EOF:
 		return "EOF"
 	default:
@@ -165,6 +168,8 @@ func (t Token) String() string {
 		return fmt.Sprintf("%s%s", op, t.Val)
 	case TOKEN_HERESTRING:
 		return "<<<" + t.Val
+	case TOKEN_ARITH_CMD:
+		return fmt.Sprintf("((%s))", t.Val)
 	case TOKEN_GT, TOKEN_APPEND, TOKEN_LT:
 		if t.Fd >= 0 {
 			return fmt.Sprintf("%s(fd=%d)", t.Type, t.Fd)
@@ -271,7 +276,17 @@ func (l *lexer) lex() ([]Token, error) {
 
 		case ch == '(':
 			l.next()
-			tokens = append(tokens, Token{Type: TOKEN_LPAREN, Fd: -1})
+			// Check for (( — arithmetic command.
+			if c, ok := l.peek(); ok && c == '(' {
+				l.next() // consume second (
+				expr, err := l.readArithCmd()
+				if err != nil {
+					return nil, err
+				}
+				tokens = append(tokens, Token{Type: TOKEN_ARITH_CMD, Val: expr, Fd: -1})
+			} else {
+				tokens = append(tokens, Token{Type: TOKEN_LPAREN, Fd: -1})
+			}
 
 		case ch == ')':
 			l.next()
@@ -594,6 +609,25 @@ func (l *lexer) readDoubleQuote() ([]WordPart, error) {
 			}
 			buf = append(buf, ch)
 		}
+	}
+}
+
+// readArithCmd reads the body of a (( ... )) arithmetic command.
+// The (( has already been consumed. Reads until )).
+func (l *lexer) readArithCmd() (string, error) {
+	var buf []rune
+	for {
+		ch, ok := l.next()
+		if !ok {
+			return "", fmt.Errorf("unterminated (( arithmetic command")
+		}
+		if ch == ')' {
+			if c, ok := l.peek(); ok && c == ')' {
+				l.next() // consume second )
+				return strings.TrimSpace(string(buf)), nil
+			}
+		}
+		buf = append(buf, ch)
 	}
 }
 

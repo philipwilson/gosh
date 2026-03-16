@@ -11,11 +11,11 @@ import (
 // May be nil if assignment is not supported (e.g., in tests).
 type SetFunc func(name, value string)
 
-// evalArith evaluates an arithmetic expression string and returns the
+// EvalArith evaluates an arithmetic expression string and returns the
 // integer result. Variable references (bare names or $name) are resolved
 // via the lookup function. Undefined variables default to 0 (bash behavior).
 // Assignment operators use setVar to write back to shell variables.
-func evalArith(expr string, lookup LookupFunc, setVar SetFunc) (int64, error) {
+func EvalArith(expr string, lookup LookupFunc, setVar SetFunc) (int64, error) {
 	tokens, err := tokenizeArith(expr)
 	if err != nil {
 		return 0, err

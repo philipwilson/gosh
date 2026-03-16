@@ -604,3 +604,41 @@ func expectParts(t *testing.T, got Word, want ...WordPart) {
 		}
 	}
 }
+
+func TestArithCmd(t *testing.T) {
+	tokens, err := Lex("(( x + 1 ))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should produce: ARITH_CMD, EOF
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d: %v", len(tokens), tokens)
+	}
+	if tokens[0].Type != TOKEN_ARITH_CMD {
+		t.Errorf("expected TOKEN_ARITH_CMD, got %s", tokens[0].Type)
+	}
+	if tokens[0].Val != "x + 1" {
+		t.Errorf("expected expr %q, got %q", "x + 1", tokens[0].Val)
+	}
+}
+
+func TestArithCmdInList(t *testing.T) {
+	tokens, err := Lex("(( x++ )); echo done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ARITH_CMD, SEMI, WORD("echo"), WORD("done"), EOF
+	if tokens[0].Type != TOKEN_ARITH_CMD {
+		t.Errorf("expected TOKEN_ARITH_CMD, got %s", tokens[0].Type)
+	}
+	if tokens[0].Val != "x++" {
+		t.Errorf("expected expr %q, got %q", "x++", tokens[0].Val)
+	}
+}
+
+func TestArithCmdUnterminated(t *testing.T) {
+	_, err := Lex("(( x + 1 )")
+	if err == nil {
+		t.Fatal("expected error for unterminated ((")
+	}
+}

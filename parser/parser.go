@@ -175,6 +175,10 @@ func (p *parser) parseCommand() (Command, error) {
 			}
 		}
 	}
+	if tok.Type == lexer.TOKEN_ARITH_CMD {
+		p.next()
+		return &ArithCmd{Expr: tok.Val}, nil
+	}
 	return p.parseSimpleCommand()
 }
 

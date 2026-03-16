@@ -177,10 +177,14 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 	// Phase 3.5: word splitting on args only (not assignments or redirects).
 	// Split unquoted expansion results on IFS characters.
 	// Look up IFS without triggering nounset — it's an internal shell lookup.
+	// IFS="" (empty) means no splitting; IFS unset means default " \t\n".
 	var ifs string
 	if isSet != nil && !isSet("IFS") {
 		ifs = " \t\n"
+	} else if isSet != nil {
+		ifs = lookup("IFS") // may be "" — that's intentional (no splitting)
 	} else {
+		// No isSet callback (tests) — fall back to lookup with default.
 		ifs = lookup("IFS")
 		if ifs == "" {
 			ifs = " \t\n"

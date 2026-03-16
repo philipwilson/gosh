@@ -463,8 +463,8 @@ func builtinRead(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 		if len(varNames) > 0 {
 			arrayName = varNames[0]
 		}
-		ifs := state.vars["IFS"]
-		if ifs == "" {
+		ifs, ifsSet := state.vars["IFS"]
+		if !ifsSet {
 			ifs = " \t\n"
 		}
 		// Split with no field limit.
@@ -479,9 +479,9 @@ func builtinRead(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 		return 0
 	}
 
-	// Split by IFS.
-	ifs := state.vars["IFS"]
-	if ifs == "" {
+	// Split by IFS. IFS="" means no splitting; IFS unset means default.
+	ifs, ifsSet := state.vars["IFS"]
+	if !ifsSet {
 		ifs = " \t\n"
 	}
 

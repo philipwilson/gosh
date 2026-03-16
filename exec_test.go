@@ -1039,6 +1039,67 @@ func TestAndAppendRedirect(t *testing.T) {
 	assertOutput(t, got, "hello\nworld")
 }
 
+// --- IFS handling ---
+
+func TestIFSEmptyNoSplitting(t *testing.T) {
+	// IFS="" should disable word splitting entirely.
+	s := testState(t)
+	s.vars["IFS"] = ""
+	s.setVar("x", "a b c")
+	got := runCapture(t, s, `echo $x`)
+	assertOutput(t, got, "a b c")
+}
+
+func TestIFSUnsetDefaultSplitting(t *testing.T) {
+	// IFS unset should use default splitting (space/tab/newline).
+	s := testState(t)
+	delete(s.vars, "IFS")
+	s.setVar("x", "a b c")
+	got := runCapture(t, s, `echo $x`)
+	// Default IFS splits on spaces; echo re-joins with single spaces.
+	assertOutput(t, got, "a b c")
+}
+
+func TestIFSEmptyPreservesSpaces(t *testing.T) {
+	// IFS="" should keep multiple spaces intact in expansions.
+	s := testState(t)
+	s.vars["IFS"] = ""
+	s.setVar("x", "a  b  c")
+	// With no splitting, $x stays as one word with internal spaces.
+	got := runCapture(t, s, `printf '%s\n' $x`)
+	assertOutput(t, got, "a  b  c")
+}
+
+func TestIFSEmptySetArgs(t *testing.T) {
+	// IFS="" with set -- $x should produce one argument.
+	s := testState(t)
+	got := runCapture(t, s, `x="a b c"; IFS=""; set -- $x; echo $#`)
+	assertOutput(t, got, "1")
+}
+
+func TestIFSUnsetSetArgs(t *testing.T) {
+	// Unset IFS with set -- $x should produce three arguments.
+	s := testState(t)
+	got := runCapture(t, s, `x="a b c"; unset IFS; set -- $x; echo $#`)
+	assertOutput(t, got, "3")
+}
+
+func TestIFSEmptyRead(t *testing.T) {
+	// read with IFS="" should not split.
+	s := testState(t)
+	s.vars["IFS"] = ""
+	got := runCaptureWithStdin(t, s, "read a b; echo \"a=$a\" \"b=$b\"", "hello world\n")
+	assertOutput(t, got, "a=hello world b=")
+}
+
+func TestIFSUnsetRead(t *testing.T) {
+	// read with IFS unset should split on default whitespace.
+	s := testState(t)
+	delete(s.vars, "IFS")
+	got := runCaptureWithStdin(t, s, "read a b; echo \"a=$a\" \"b=$b\"", "hello world\n")
+	assertOutput(t, got, "a=hello b=world")
+}
+
 // --- Scanner buffer (>64KB lines) ---
 
 func TestLongLineScript(t *testing.T) {

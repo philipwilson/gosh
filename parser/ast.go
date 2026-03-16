@@ -251,6 +251,12 @@ func cloneCommand(c Command) Command {
 			Name: c.Name,
 			Body: CloneList(c.Body),
 		}
+	case *DblBracketCmd:
+		items := make([]lexer.Word, len(c.Items))
+		for i, w := range c.Items {
+			items[i] = CloneWord(w)
+		}
+		return &DblBracketCmd{Items: items}
 	case *SubshellCmd:
 		return &SubshellCmd{Body: CloneList(c.Body)}
 	case *ArithCmd:
@@ -379,6 +385,25 @@ func (c *FuncDef) node()    {}
 func (c *FuncDef) command() {}
 func (c *FuncDef) String() string {
 	return "FuncDef[" + c.Name + " " + c.Body.String() + "]"
+}
+
+// --- DblBracketCmd ---
+
+// DblBracketCmd represents: [[ expr ]] — extended conditional test.
+// Items are the expression tokens between [[ and ]], preserving quoting
+// for pattern matching on the RHS of == and !=.
+type DblBracketCmd struct {
+	Items []lexer.Word
+}
+
+func (c *DblBracketCmd) node()    {}
+func (c *DblBracketCmd) command() {}
+func (c *DblBracketCmd) String() string {
+	var parts []string
+	for _, w := range c.Items {
+		parts = append(parts, w.String())
+	}
+	return "[[ " + strings.Join(parts, " ") + " ]]"
 }
 
 // --- SubshellCmd ---

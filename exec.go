@@ -268,6 +268,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execFor(state, c, stdin, stdout)
 	case *parser.CaseCmd:
 		return execCase(state, c, stdin, stdout)
+	case *parser.DblBracketCmd:
+		return execDblBracket(state, c)
 	case *parser.SubshellCmd:
 		return execSubshell(state, c, stdin, stdout)
 	case *parser.ArithCmd:

@@ -177,6 +177,8 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseFor()
 		case "case":
 			return p.parseCase()
+		case "[[":
+			return p.parseDblBracket()
 		default:
 			// Check for function definition: WORD ( ) { ... }
 			if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == lexer.TOKEN_LPAREN {
@@ -192,6 +194,46 @@ func (p *parser) parseCommand() (Command, error) {
 		return p.parseSubshell()
 	}
 	return p.parseSimpleCommand()
+}
+
+// parseDblBracket parses: '[[' expr ']]'
+// Collects all tokens between [[ and ]] as expression items.
+// Operator tokens (&&, ||, <, >, (, )) are converted to word items.
+func (p *parser) parseDblBracket() (*DblBracketCmd, error) {
+	p.next() // consume [[
+	var items []lexer.Word
+	for {
+		tok := p.peek()
+		if tok.Type == lexer.TOKEN_EOF {
+			return nil, fmt.Errorf("expected ']]', got EOF")
+		}
+		if tok.Type == lexer.TOKEN_WORD && tok.Val == "]]" {
+			p.next() // consume ]]
+			return &DblBracketCmd{Items: items}, nil
+		}
+		p.next()
+		switch tok.Type {
+		case lexer.TOKEN_WORD:
+			items = append(items, tok.Parts)
+		case lexer.TOKEN_AND:
+			items = append(items, lexer.Word{{Text: "&&", Quote: lexer.Unquoted}})
+		case lexer.TOKEN_OR:
+			items = append(items, lexer.Word{{Text: "||", Quote: lexer.Unquoted}})
+		case lexer.TOKEN_LT:
+			items = append(items, lexer.Word{{Text: "<", Quote: lexer.Unquoted}})
+		case lexer.TOKEN_GT:
+			items = append(items, lexer.Word{{Text: ">", Quote: lexer.Unquoted}})
+		case lexer.TOKEN_LPAREN:
+			items = append(items, lexer.Word{{Text: "(", Quote: lexer.Unquoted}})
+		case lexer.TOKEN_RPAREN:
+			items = append(items, lexer.Word{{Text: ")", Quote: lexer.Unquoted}})
+		case lexer.TOKEN_SEMI:
+			// Ignore semicolons (from newlines) inside [[ ]].
+			continue
+		default:
+			return nil, fmt.Errorf("unexpected token in [[ ]]: %s", tok)
+		}
+	}
 }
 
 // parseSubshell parses: '(' list ')'

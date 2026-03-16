@@ -72,6 +72,8 @@ func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, s
 			// CaseCmd word, patterns, and body are expanded lazily by the executor.
 		case *parser.FuncDef:
 			// FuncDef body is stored and expanded when the function is called.
+		case *parser.DblBracketCmd:
+			// DblBracketCmd items are expanded at execution time.
 		case *parser.SubshellCmd:
 			// SubshellCmd body is expanded at execution time.
 		case *parser.ArithCmd:

@@ -728,6 +728,71 @@ func TestSubshellInList(t *testing.T) {
 	}
 }
 
+func TestDblBracket(t *testing.T) {
+	tokens, err := lexer.Lex(`[[ $x == hello ]]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(list.Entries))
+	}
+	db, ok := list.Entries[0].Pipeline.Cmds[0].(*DblBracketCmd)
+	if !ok {
+		t.Fatalf("expected DblBracketCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	// Should have 3 items: $x, ==, hello
+	if len(db.Items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(db.Items))
+	}
+}
+
+func TestDblBracketWithLogical(t *testing.T) {
+	tokens, err := lexer.Lex(`[[ -f foo && -d bar ]]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, ok := list.Entries[0].Pipeline.Cmds[0].(*DblBracketCmd)
+	if !ok {
+		t.Fatalf("expected DblBracketCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	// Should have 5 items: -f, foo, &&, -d, bar
+	if len(db.Items) != 5 {
+		t.Fatalf("expected 5 items, got %d: %v", len(db.Items), db)
+	}
+	if db.Items[2].String() != "&&" {
+		t.Errorf("expected '&&', got %q", db.Items[2].String())
+	}
+}
+
+func TestDblBracketInList(t *testing.T) {
+	tokens, err := lexer.Lex(`[[ -n hello ]] && echo yes`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(list.Entries))
+	}
+	_, ok := list.Entries[0].Pipeline.Cmds[0].(*DblBracketCmd)
+	if !ok {
+		t.Fatalf("expected DblBracketCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if list.Entries[0].Op != "&&" {
+		t.Errorf("expected op '&&', got %q", list.Entries[0].Op)
+	}
+}
+
 func TestArithCmdParse(t *testing.T) {
 	tokens, err := lexer.Lex("(( x + 1 ))")
 	if err != nil {

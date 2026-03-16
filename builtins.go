@@ -55,6 +55,9 @@ var builtins = map[string]builtinFunc{
 	"exec":            builtinExecStub,
 	"let":             builtinLet,
 	"getopts":         builtinGetopts,
+	"declare":         builtinDeclare,
+	"typeset":         builtinDeclare,
+	"readonly":        builtinReadonly,
 }
 
 // builtinCd changes the shell's working directory.
@@ -218,8 +221,6 @@ func builtinLocal(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 		return 1
 	}
 
-	scope := state.localScopes[len(state.localScopes)-1]
-
 	// Check for -a flag (declare local array).
 	declareArray := false
 	startIdx := 0
@@ -230,22 +231,7 @@ func builtinLocal(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 
 	for _, arg := range args[startIdx:] {
 		name, value, hasValue := strings.Cut(arg, "=")
-		// Only save the first time a variable is declared local in
-		// this scope — subsequent "local x=newval" should not
-		// overwrite the saved original.
-		if _, already := scope[name]; !already {
-			if arr, isArr := state.arrays[name]; isArr {
-				cp := make([]string, len(arr))
-				copy(cp, arr)
-				scope[name] = savedVar{exists: true, isArray: true, arrayVal: cp}
-			} else if declareArray {
-				// Declaring a new local array — save that it didn't exist.
-				scope[name] = savedVar{exists: false, isArray: true}
-			} else {
-				old, exists := state.vars[name]
-				scope[name] = savedVar{value: old, exists: exists}
-			}
-		}
+		saveLocalVar(state, name, declareArray)
 		if declareArray {
 			if !hasValue {
 				state.setArray(name, nil)
@@ -258,6 +244,25 @@ func builtinLocal(state *shellState, args []string, stdin, stdout, stderr *os.Fi
 	}
 
 	return 0
+}
+
+// saveLocalVar saves the current state of a variable in the current local
+// scope. Only saves the first time a variable is declared in a scope.
+func saveLocalVar(state *shellState, name string, isArray bool) {
+	scope := state.localScopes[len(state.localScopes)-1]
+	if _, already := scope[name]; already {
+		return
+	}
+	if arr, isArr := state.arrays[name]; isArr {
+		cp := make([]string, len(arr))
+		copy(cp, arr)
+		scope[name] = savedVar{exists: true, isArray: true, arrayVal: cp, attrs: state.attrs[name]}
+	} else if isArray {
+		scope[name] = savedVar{exists: false, isArray: true, attrs: state.attrs[name]}
+	} else {
+		old, exists := state.vars[name]
+		scope[name] = savedVar{value: old, exists: exists, attrs: state.attrs[name]}
+	}
 }
 
 // builtinAlias defines or lists aliases.
@@ -327,7 +332,14 @@ func builtinUnalias(state *shellState, args []string, stdin, stdout, stderr *os.
 // Supports "export VAR" and "export VAR=VALUE".
 func builtinExport(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		for k := range state.exported {
+		names := make([]string, 0, len(state.attrs))
+		for k, a := range state.attrs {
+			if a&attrExport != 0 {
+				names = append(names, k)
+			}
+		}
+		sort.Strings(names)
+		for _, k := range names {
 			fmt.Fprintf(stdout, "export %s=%q\n", k, state.vars[k])
 		}
 		return 0
@@ -346,12 +358,15 @@ func builtinExport(state *shellState, args []string, stdin, stdout, stderr *os.F
 // builtinUnset removes variables from the shell.
 // Supports unsetting array elements: unset 'arr[N]'
 func builtinUnset(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	status := 0
 	for _, name := range args {
 		// Strip quotes that the user might have used to protect brackets.
 		name = strings.Trim(name, "'\"")
-		state.unsetVar(name)
+		if !state.unsetVar(name) {
+			status = 1
+		}
 	}
-	return 0
+	return status
 }
 
 // builtinRead reads a line from stdin and splits it into variables.
@@ -968,6 +983,224 @@ func builtinGetopts(state *shellState, args []string, stdin, stdout, stderr *os.
 		}
 		setOptind(optind + 1)
 		state.setVar("_OPTPOS", "0")
+	}
+	return 0
+}
+
+// builtinDeclare implements the declare/typeset builtin.
+//
+//	declare [-airx] [name[=value] ...]
+//	declare [-p] [name ...]
+//	declare [+ix] [name ...]
+func builtinDeclare(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	// Parse flags.
+	var setFlags, clearFlags uint8
+	printMode := false
+	declareArray := false
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if len(arg) < 2 || (arg[0] != '-' && arg[0] != '+') {
+			break
+		}
+		prefix := arg[0]
+		for _, ch := range arg[1:] {
+			switch ch {
+			case 'a':
+				if prefix == '+' {
+					// +a not meaningful, ignore
+				} else {
+					declareArray = true
+				}
+			case 'i':
+				if prefix == '-' {
+					setFlags |= attrInteger
+				} else {
+					clearFlags |= attrInteger
+				}
+			case 'r':
+				if prefix == '+' {
+					fmt.Fprintln(stderr, "gosh: declare: cannot remove readonly attribute")
+					return 1
+				}
+				setFlags |= attrReadonly
+			case 'x':
+				if prefix == '-' {
+					setFlags |= attrExport
+				} else {
+					clearFlags |= attrExport
+				}
+			case 'p':
+				printMode = true
+			default:
+				fmt.Fprintf(stderr, "gosh: declare: -%c: invalid option\n", ch)
+				return 1
+			}
+		}
+		i++
+	}
+	remaining := args[i:]
+
+	// Print mode or no args: list variables.
+	if printMode || (len(remaining) == 0 && setFlags == 0 && clearFlags == 0 && !declareArray) {
+		return declarePrint(state, remaining, stdout)
+	}
+
+	inFunction := len(state.localScopes) > 0
+
+	for _, arg := range remaining {
+		name, value, hasValue := strings.Cut(arg, "=")
+
+		if inFunction {
+			saveLocalVar(state, name, declareArray)
+		}
+
+		// Set non-readonly attributes first (so integer evaluation kicks in).
+		// Readonly is deferred until after value is set.
+		state.attrs[name] = (state.attrs[name] | (setFlags &^ attrReadonly)) &^ clearFlags
+
+		if declareArray {
+			if !hasValue {
+				if _, exists := state.arrays[name]; !exists {
+					state.setArray(name, nil)
+				}
+			}
+		} else if hasValue {
+			state.setVar(name, value)
+		} else if setFlags != 0 || clearFlags != 0 {
+			// Just setting/clearing attributes on existing var.
+			// If the variable doesn't exist, create it as empty.
+			if _, ok := state.vars[name]; !ok {
+				if _, ok := state.arrays[name]; !ok {
+					state.vars[name] = ""
+				}
+			}
+		}
+
+		// Now apply readonly if requested (after value is set).
+		if setFlags&attrReadonly != 0 {
+			state.attrs[name] |= attrReadonly
+		}
+	}
+
+	return 0
+}
+
+// declarePrint prints variable declarations.
+func declarePrint(state *shellState, names []string, stdout *os.File) int {
+	if len(names) == 0 {
+		// Print all variables with attributes.
+		allNames := make([]string, 0, len(state.vars)+len(state.arrays))
+		seen := make(map[string]bool)
+		for k := range state.vars {
+			allNames = append(allNames, k)
+			seen[k] = true
+		}
+		for k := range state.arrays {
+			if !seen[k] {
+				allNames = append(allNames, k)
+			}
+		}
+		sort.Strings(allNames)
+		for _, name := range allNames {
+			printDeclare(state, name, stdout)
+		}
+		return 0
+	}
+
+	status := 0
+	for _, name := range names {
+		if _, ok := state.vars[name]; ok {
+			printDeclare(state, name, stdout)
+		} else if _, ok := state.arrays[name]; ok {
+			printDeclare(state, name, stdout)
+		} else {
+			fmt.Fprintf(os.Stderr, "gosh: declare: %s: not found\n", name)
+			status = 1
+		}
+	}
+	return status
+}
+
+// printDeclare prints a single variable in declare format.
+func printDeclare(state *shellState, name string, stdout *os.File) {
+	a := state.attrs[name]
+	var flags strings.Builder
+	flags.WriteByte('-')
+	hasFlags := false
+	if a&attrExport != 0 {
+		flags.WriteByte('x')
+		hasFlags = true
+	}
+	if a&attrInteger != 0 {
+		flags.WriteByte('i')
+		hasFlags = true
+	}
+	if a&attrReadonly != 0 {
+		flags.WriteByte('r')
+		hasFlags = true
+	}
+	if arr, ok := state.arrays[name]; ok {
+		if hasFlags {
+			flags.WriteByte('a')
+		} else {
+			flags.Reset()
+			flags.WriteString("-a")
+		}
+		fmt.Fprintf(stdout, "declare %s %s=%s\n", flags.String(), name, formatArrayValue(arr))
+		return
+	}
+	prefix := "declare --"
+	if hasFlags {
+		prefix = "declare " + flags.String()
+	}
+	fmt.Fprintf(stdout, "%s %s=%q\n", prefix, name, state.vars[name])
+}
+
+// formatArrayValue formats an array as (elem0 elem1 ...) with quoting.
+func formatArrayValue(arr []string) string {
+	var sb strings.Builder
+	sb.WriteByte('(')
+	for i, v := range arr {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(strconv.Quote(v))
+	}
+	sb.WriteByte(')')
+	return sb.String()
+}
+
+// builtinReadonly implements the readonly builtin.
+//
+//	readonly              — list all readonly variables
+//	readonly name[=value] — mark variable as readonly
+func builtinReadonly(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
+	if len(args) == 0 {
+		// List all readonly variables.
+		names := make([]string, 0)
+		for k, a := range state.attrs {
+			if a&attrReadonly != 0 {
+				names = append(names, k)
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			printDeclare(state, name, stdout)
+		}
+		return 0
+	}
+
+	for _, arg := range args {
+		name, value, hasValue := strings.Cut(arg, "=")
+		if hasValue {
+			// Temporarily ensure not readonly so we can set the value.
+			oldAttrs := state.attrs[name]
+			state.attrs[name] &^= attrReadonly
+			state.setVar(name, value)
+			state.attrs[name] = oldAttrs
+		}
+		state.attrs[name] |= attrReadonly
 	}
 	return 0
 }

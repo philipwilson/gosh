@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gosh/editor"
+	"gosh/expander"
 	"gosh/lexer"
 	"gosh/parser"
 )
@@ -23,12 +24,19 @@ import (
 // Defaults to "dev" for plain `go build` without flags.
 var version = "dev"
 
+// Variable attribute flags.
+const (
+	attrExport   uint8 = 1 << 0 // -x: export to children
+	attrReadonly uint8 = 1 << 1 // -r: readonly
+	attrInteger  uint8 = 1 << 2 // -i: integer
+)
+
 // shellState holds the shell's mutable state: variables, export
 // set, last exit status, and terminal control info.
 type shellState struct {
 	vars             map[string]string       // shell variables
 	arrays           map[string][]string     // indexed arrays
-	exported         map[string]bool         // which variables are exported to children
+	attrs            map[string]uint8        // variable attributes (export, readonly, integer)
 	aliases          map[string]string       // alias name → replacement text
 	funcs            map[string]*parser.List // user-defined functions
 	lastStatus       int                  // $? — exit status of last command
@@ -67,18 +75,18 @@ type shellState struct {
 
 func newShellState() *shellState {
 	s := &shellState{
-		vars:     make(map[string]string),
-		arrays:   make(map[string][]string),
-		exported: make(map[string]bool),
-		aliases:  make(map[string]string),
-		funcs:    make(map[string]*parser.List),
-		termFd:   int(os.Stdin.Fd()),
+		vars:    make(map[string]string),
+		arrays:  make(map[string][]string),
+		attrs:   make(map[string]uint8),
+		aliases: make(map[string]string),
+		funcs:   make(map[string]*parser.List),
+		termFd:  int(os.Stdin.Fd()),
 	}
 
 	for _, entry := range os.Environ() {
 		if k, v, ok := strings.Cut(entry, "="); ok {
 			s.vars[k] = v
-			s.exported[k] = true
+			s.attrs[k] |= attrExport
 		}
 	}
 
@@ -297,7 +305,10 @@ func (s *shellState) lookupArray(name string) ([]string, bool) {
 
 func (s *shellState) environ() []string {
 	var env []string
-	for k := range s.exported {
+	for k, a := range s.attrs {
+		if a&attrExport == 0 {
+			continue
+		}
 		// Arrays are not exported to children (bash behavior).
 		if _, isArray := s.arrays[k]; isArray {
 			continue
@@ -319,9 +330,18 @@ func (s *shellState) setVar(name, value string) {
 	}
 	// Array element assignment: arr[N]=value
 	if arrName, subscript, ok := parseArrayRef(name); ok {
+		// Readonly check on the array name.
+		if s.isReadonly(arrName) {
+			fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", arrName)
+			return
+		}
 		idx, err := strconv.Atoi(subscript)
 		if err != nil || idx < 0 {
 			return
+		}
+		// Integer attribute: evaluate value as arithmetic.
+		if s.isInteger(arrName) {
+			value = s.evalIntegerValue(value)
 		}
 		arr := s.arrays[arrName]
 		// Grow the array if needed.
@@ -332,42 +352,90 @@ func (s *shellState) setVar(name, value string) {
 		s.arrays[arrName] = arr
 		return
 	}
+	// Readonly check.
+	if s.isReadonly(name) {
+		fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", name)
+		return
+	}
+	// Integer attribute: evaluate value as arithmetic.
+	if s.isInteger(name) {
+		value = s.evalIntegerValue(value)
+	}
 	s.vars[name] = value
+}
+
+// isReadonly returns true if the variable has the readonly attribute.
+func (s *shellState) isReadonly(name string) bool {
+	return s.attrs[name]&attrReadonly != 0
+}
+
+// isInteger returns true if the variable has the integer attribute.
+func (s *shellState) isInteger(name string) bool {
+	return s.attrs[name]&attrInteger != 0
+}
+
+// evalIntegerValue evaluates a string as an arithmetic expression,
+// returning the result as a string. On error, returns "0".
+func (s *shellState) evalIntegerValue(value string) string {
+	expr := expander.ExpandDollar(value, s.lookup)
+	result, err := expander.EvalArith(expr, s.lookup, s.setVar)
+	if err != nil {
+		return "0"
+	}
+	return strconv.FormatInt(result, 10)
 }
 
 // setArray sets an array variable, replacing any existing value.
 func (s *shellState) setArray(name string, vals []string) {
+	if s.isReadonly(name) {
+		fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", name)
+		return
+	}
 	s.arrays[name] = vals
 }
 
 // appendArray appends values to an existing array (or creates one).
 func (s *shellState) appendArray(name string, vals []string) {
+	if s.isReadonly(name) {
+		fmt.Fprintf(os.Stderr, "gosh: %s: readonly variable\n", name)
+		return
+	}
 	s.arrays[name] = append(s.arrays[name], vals...)
 }
 
 func (s *shellState) exportVar(name string) {
-	s.exported[name] = true
+	s.attrs[name] |= attrExport
 }
 
-func (s *shellState) unsetVar(name string) {
+// unsetVar removes a variable. Returns false if the variable is readonly.
+func (s *shellState) unsetVar(name string) bool {
 	// Array element: unset arr[N] sets element to ""
 	if arrName, subscript, ok := parseArrayRef(name); ok {
+		if s.isReadonly(arrName) {
+			fmt.Fprintf(os.Stderr, "gosh: unset: %s: readonly variable\n", arrName)
+			return false
+		}
 		arr := s.arrays[arrName]
 		if subscript == "@" || subscript == "*" {
 			delete(s.arrays, arrName)
-			return
+			return true
 		}
 		idx, err := strconv.Atoi(subscript)
 		if err != nil || idx < 0 || idx >= len(arr) {
-			return
+			return true
 		}
 		arr[idx] = ""
 		s.arrays[arrName] = arr
-		return
+		return true
+	}
+	if s.isReadonly(name) {
+		fmt.Fprintf(os.Stderr, "gosh: unset: %s: readonly variable\n", name)
+		return false
 	}
 	delete(s.vars, name)
 	delete(s.arrays, name)
-	delete(s.exported, name)
+	delete(s.attrs, name)
+	return true
 }
 
 // formatPrompt expands bash-style backslash escapes in a prompt string

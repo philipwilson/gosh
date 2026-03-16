@@ -699,6 +699,11 @@ func execAssignment(state *shellState, a parser.Assignment, stderr *os.File) {
 		return
 	}
 	if a.Append {
+		// Integer append: arithmetic addition.
+		if state.isInteger(a.Name) {
+			state.setVar(a.Name, state.vars[a.Name]+"+"+a.Value.String())
+			return
+		}
 		// String append: var+=value
 		state.setVar(a.Name, state.vars[a.Name]+a.Value.String())
 		return
@@ -712,11 +717,22 @@ type savedVar struct {
 	exists   bool
 	isArray  bool
 	arrayVal []string
+	attrs    uint8
 }
 
 // restoreVars undoes temporary per-command variable assignments.
 func restoreVars(state *shellState, saved map[string]savedVar) {
 	for name, sv := range saved {
+		// Restore attrs first (before setVar, which checks readonly).
+		if sv.exists {
+			if sv.attrs != 0 {
+				state.attrs[name] = sv.attrs
+			} else {
+				delete(state.attrs, name)
+			}
+		} else {
+			delete(state.attrs, name)
+		}
 		if sv.isArray {
 			if sv.exists {
 				state.arrays[name] = sv.arrayVal
@@ -725,7 +741,7 @@ func restoreVars(state *shellState, saved map[string]savedVar) {
 			}
 		} else {
 			if sv.exists {
-				state.setVar(name, sv.value)
+				state.vars[name] = sv.value
 			} else {
 				delete(state.vars, name)
 			}
@@ -742,9 +758,9 @@ func saveVarState(state *shellState, saved map[string]savedVar, name string) {
 	if arr, isArr := state.arrays[name]; isArr {
 		cp := make([]string, len(arr))
 		copy(cp, arr)
-		saved[name] = savedVar{exists: true, isArray: true, arrayVal: cp}
+		saved[name] = savedVar{exists: true, isArray: true, arrayVal: cp, attrs: state.attrs[name]}
 	} else {
 		old, exists := state.vars[name]
-		saved[name] = savedVar{value: old, exists: exists}
+		saved[name] = savedVar{value: old, exists: exists, attrs: state.attrs[name]}
 	}
 }

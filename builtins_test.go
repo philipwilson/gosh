@@ -136,7 +136,7 @@ func TestBuiltinExportSetAndMark(t *testing.T) {
 	s := testState(t)
 	builtinExport(s, []string{"FOO=bar"}, os.Stdin, os.Stdout, os.Stderr)
 	assertVar(t, s, "FOO", "bar")
-	if !s.exported["FOO"] {
+	if s.attrs["FOO"]&attrExport == 0 {
 		t.Error("FOO should be exported")
 	}
 }
@@ -145,7 +145,7 @@ func TestBuiltinExportMarkOnly(t *testing.T) {
 	s := testState(t)
 	s.setVar("X", "val")
 	builtinExport(s, []string{"X"}, os.Stdin, os.Stdout, os.Stderr)
-	if !s.exported["X"] {
+	if s.attrs["X"]&attrExport == 0 {
 		t.Error("X should be exported")
 	}
 }

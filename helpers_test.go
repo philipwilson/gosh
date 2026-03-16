@@ -18,7 +18,7 @@ func testState(t *testing.T) *shellState {
 	s := &shellState{
 		vars:           make(map[string]string),
 		arrays:         make(map[string][]string),
-		exported:       make(map[string]bool),
+		attrs:          make(map[string]uint8),
 		aliases:        make(map[string]string),
 		funcs:          make(map[string]*parser.List),
 		traps:          make(map[string]string),

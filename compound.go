@@ -27,9 +27,9 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, std
 		copy(cp, v)
 		savedArrays[k] = cp
 	}
-	savedExported := make(map[string]bool, len(state.exported))
-	for k, v := range state.exported {
-		savedExported[k] = v
+	savedAttrs := make(map[string]uint8, len(state.attrs))
+	for k, v := range state.attrs {
+		savedAttrs[k] = v
 	}
 	savedFuncs := make(map[string]*parser.List, len(state.funcs))
 	for k, v := range state.funcs {
@@ -60,7 +60,7 @@ func execSubshell(state *shellState, cmd *parser.SubshellCmd, stdin, stdout, std
 	// Restore shell state.
 	state.vars = savedVars
 	state.arrays = savedArrays
-	state.exported = savedExported
+	state.attrs = savedAttrs
 	state.funcs = savedFuncs
 	state.aliases = savedAliases
 	state.positionalParams = savedParams

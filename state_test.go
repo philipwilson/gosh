@@ -65,7 +65,7 @@ func TestUnsetVar(t *testing.T) {
 	s.exportVar("X")
 	s.unsetVar("X")
 	assertVar(t, s, "X", "")
-	if s.exported["X"] {
+	if s.attrs["X"]&attrExport != 0 {
 		t.Error("X still exported after unset")
 	}
 }

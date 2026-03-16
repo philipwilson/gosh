@@ -147,6 +147,9 @@ func (s *shellState) lookup(name string) string {
 	case "@", "*":
 		return strings.Join(s.positionalParams, " ")
 	case "0":
+		if v, ok := s.vars["0"]; ok {
+			return v
+		}
 		return "gosh"
 	case "RANDOM":
 		return strconv.Itoa(rand.Intn(32768))
@@ -591,6 +594,22 @@ func main() {
 	}
 
 	state := newShellState()
+
+	// gosh -c 'command' [arg0 [args...]]
+	if len(os.Args) >= 2 && os.Args[1] == "-c" {
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "gosh: -c: option requires an argument")
+			os.Exit(2)
+		}
+		cmdStr := os.Args[2]
+		if len(os.Args) > 3 {
+			state.vars["0"] = os.Args[3]
+			state.positionalParams = os.Args[4:]
+		}
+		runLine(state, cmdStr)
+		state.runTrap("EXIT")
+		os.Exit(state.lastStatus)
+	}
 
 	// If a script file is given as an argument, run it.
 	if len(os.Args) >= 2 {

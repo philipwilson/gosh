@@ -691,3 +691,91 @@ func TestSelectEOF(t *testing.T) {
 	got := runCaptureWithStdin(t, s, `select x in a; do echo $x; done; echo done`, "")
 	assertOutput(t, got, "done")
 }
+
+// --- gosh -c ---
+
+func buildGosh(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "gosh")
+	cmd := osexec.Command("go", "build", "-o", bin, ".")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func TestDashCSimple(t *testing.T) {
+	bin := buildGosh(t)
+	out, err := osexec.Command(bin, "-c", "echo hello").Output()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "hello" {
+		t.Fatalf("got %q, want %q", got, "hello")
+	}
+}
+
+func TestDashCVar(t *testing.T) {
+	bin := buildGosh(t)
+	out, err := osexec.Command(bin, "-c", "X=42; echo $X").Output()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "42" {
+		t.Fatalf("got %q, want %q", got, "42")
+	}
+}
+
+func TestDashCArgs(t *testing.T) {
+	bin := buildGosh(t)
+	out, err := osexec.Command(bin, "-c", "echo $1", "_", "foo").Output()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "foo" {
+		t.Fatalf("got %q, want %q", got, "foo")
+	}
+}
+
+func TestDashCArg0(t *testing.T) {
+	bin := buildGosh(t)
+	out, err := osexec.Command(bin, "-c", "echo $0", "myname").Output()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "myname" {
+		t.Fatalf("got %q, want %q", got, "myname")
+	}
+}
+
+func TestDashCExitStatus(t *testing.T) {
+	bin := buildGosh(t)
+	err := osexec.Command(bin, "-c", "false").Run()
+	if err == nil {
+		t.Fatal("expected non-zero exit status")
+	}
+	if exitErr, ok := err.(*osexec.ExitError); ok {
+		if exitErr.ExitCode() != 1 {
+			t.Fatalf("got exit code %d, want 1", exitErr.ExitCode())
+		}
+	} else {
+		t.Fatalf("unexpected error type: %v", err)
+	}
+}
+
+func TestDashCNoArg(t *testing.T) {
+	bin := buildGosh(t)
+	err := osexec.Command(bin, "-c").Run()
+	if err == nil {
+		t.Fatal("expected non-zero exit status")
+	}
+	if exitErr, ok := err.(*osexec.ExitError); ok {
+		if exitErr.ExitCode() != 2 {
+			t.Fatalf("got exit code %d, want 2", exitErr.ExitCode())
+		}
+	} else {
+		t.Fatalf("unexpected error type: %v", err)
+	}
+}

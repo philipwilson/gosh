@@ -52,6 +52,7 @@ type shellState struct {
 	traps            map[string]string    // signal name → command string
 	pendingSignals   map[string]bool      // signals received, not yet handled
 	pendingMu        sync.Mutex           // guards pendingSignals
+	trapsMu          sync.RWMutex         // guards traps map
 	trapRunning      bool                 // prevent recursive trap execution
 	sigCh            chan os.Signal       // signal notification channel
 	optErrexit       bool                 // set -e: exit on error
@@ -214,12 +215,20 @@ func (s *shellState) lookup(name string) string {
 		if val, ok := s.vars[name]; ok {
 			return val
 		}
-		if s.optNounset {
-			fmt.Fprintf(os.Stderr, "gosh: %s: unbound variable\n", name)
-			s.nounsetError = true
-		}
 		return ""
 	}
+}
+
+// lookupNounset wraps lookup with nounset checking. Used by the expander
+// for bare variable references ($VAR, ${VAR}) where no default operator
+// is present, so that `set -u` fires for unset variables.
+func (s *shellState) lookupNounset(name string) string {
+	val := s.lookup(name)
+	if val == "" && s.optNounset && !s.isVarSet(name) {
+		fmt.Fprintf(os.Stderr, "gosh: %s: unbound variable\n", name)
+		s.nounsetError = true
+	}
+	return val
 }
 
 // isVarSet returns true if the named variable exists in the shell state.
@@ -586,7 +595,9 @@ func (s *shellState) runTrap(name string) {
 
 // runTrapWithIO runs a named trap handler with the given I/O.
 func (s *shellState) runTrapWithIO(name string, stdin, stdout, stderr *os.File) {
+	s.trapsMu.RLock()
 	cmd, ok := s.traps[name]
+	s.trapsMu.RUnlock()
 	if !ok {
 		return
 	}
@@ -683,6 +694,7 @@ func runScriptWithIO(state *shellState, path string, stdin, stdout, stderr *os.F
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, bufio.MaxScanTokenSize), 1024*1024)
 	for {
 		if !scanner.Scan() {
 			break
@@ -810,6 +822,7 @@ func runInteractive(state *shellState) {
 
 func runNonInteractive(state *shellState) {
 	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, bufio.MaxScanTokenSize), 1024*1024)
 	for {
 		if state.interactive {
 			fmt.Fprintf(os.Stderr, "%s", state.formatPrompt(state.vars["PS1"]))

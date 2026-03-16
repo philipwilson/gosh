@@ -381,6 +381,50 @@ func TestExecSubstringOffset(t *testing.T) {
 	assertOutput(t, got, "llo")
 }
 
+// --- Colon vs non-colon parameter expansion operators ---
+
+func TestParamDefaultColonEmpty(t *testing.T) {
+	// ${X:-default} should return "default" when X is empty.
+	s := testState(t)
+	got := runCapture(t, s, `X=""; echo "${X:-default}"`)
+	assertOutput(t, got, "default")
+}
+
+func TestParamDefaultNonColonEmpty(t *testing.T) {
+	// ${X-default} should return "" when X is set but empty.
+	s := testState(t)
+	got := runCapture(t, s, `X=""; echo "[${X-default}]"`)
+	assertOutput(t, got, "[]")
+}
+
+func TestParamDefaultNonColonUnset(t *testing.T) {
+	// ${X-default} should return "default" when X is unset.
+	s := testState(t)
+	got := runCapture(t, s, `echo "[${UNSET_XYZ-default}]"`)
+	assertOutput(t, got, "[default]")
+}
+
+func TestParamAltColonEmpty(t *testing.T) {
+	// ${X:+alt} should return "" when X is empty.
+	s := testState(t)
+	got := runCapture(t, s, `X=""; echo "[${X:+alt}]"`)
+	assertOutput(t, got, "[]")
+}
+
+func TestParamAltNonColonEmpty(t *testing.T) {
+	// ${X+alt} should return "alt" when X is set but empty.
+	s := testState(t)
+	got := runCapture(t, s, `X=""; echo "[${X+alt}]"`)
+	assertOutput(t, got, "[alt]")
+}
+
+func TestParamAltNonColonUnset(t *testing.T) {
+	// ${X+alt} should return "" when X is unset.
+	s := testState(t)
+	got := runCapture(t, s, `echo "[${UNSET_XYZ+alt}]"`)
+	assertOutput(t, got, "[]")
+}
+
 // --- $! variable ---
 
 func TestBangVar(t *testing.T) {
@@ -993,4 +1037,25 @@ func TestAndAppendRedirect(t *testing.T) {
 	tmp := t.TempDir()
 	got := runCapture(t, s, `echo hello &>>`+tmp+`/out; echo world &>>`+tmp+`/out; cat `+tmp+`/out`)
 	assertOutput(t, got, "hello\nworld")
+}
+
+// --- Scanner buffer (>64KB lines) ---
+
+func TestLongLineScript(t *testing.T) {
+	// Test that lines >64KB work in scripts (scanner buffer fix).
+	s := testState(t)
+	tmp := t.TempDir()
+	longStr := strings.Repeat("a", 70000)
+	script := filepath.Join(tmp, "long.sh")
+	outFile := filepath.Join(tmp, "out.txt")
+	os.WriteFile(script, []byte("echo "+longStr+" > "+outFile+"\n"), 0644)
+	runCapture(t, s, "source "+script)
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	if got != longStr {
+		t.Errorf("long line: got %d chars, want %d", len(got), len(longStr))
+	}
 }

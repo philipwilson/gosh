@@ -12,7 +12,8 @@ import (
 // expandVarsInWord expands $VAR references in a word, respecting quoting.
 // For Unquoted parts, expansion results are marked Expanded (subject to
 // word splitting). For DoubleQuoted parts, results keep DoubleQuoted context.
-func expandVarsInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
+// isSet may be nil (nounset checking disabled).
+func expandVarsInWord(w lexer.Word, lookup LookupFunc, isSet IsSetFunc) lexer.Word {
 	var result lexer.Word
 
 	for _, part := range w {
@@ -23,11 +24,11 @@ func expandVarsInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 		if part.Quote == lexer.Unquoted {
 			// Produce structured parts: literal text stays Unquoted,
 			// expansion results are marked Expanded for word splitting.
-			result = append(result, expandDollarParts(part.Text, lookup)...)
+			result = append(result, expandDollarParts(part.Text, lookup, isSet)...)
 		} else {
 			// DoubleQuoted (or Expanded from prior phase) — expand
 			// variables but keep the quoting context.
-			expanded := expandDollar(part.Text, lookup)
+			expanded := expandDollar(part.Text, lookup, isSet)
 			result = append(result, lexer.WordPart{
 				Text:  expanded,
 				Quote: part.Quote,
@@ -42,9 +43,9 @@ func expandVarsInWord(w lexer.Word, lookup LookupFunc) lexer.Word {
 // words when a DoubleQuoted part contains "${arr[@]}" or "$@". Each array
 // element becomes a separate word, with surrounding text attached to the
 // first and last elements.
-func expandVarsInWordMulti(w lexer.Word, lookup LookupFunc, lookupArray LookupArrayFunc) []lexer.Word {
+func expandVarsInWordMulti(w lexer.Word, lookup LookupFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) []lexer.Word {
 	if lookupArray == nil {
-		return []lexer.Word{expandVarsInWord(w, lookup)}
+		return []lexer.Word{expandVarsInWord(w, lookup, isSet)}
 	}
 
 	// Check if any DoubleQuoted part contains an array-@ expansion.
@@ -56,7 +57,7 @@ func expandVarsInWordMulti(w lexer.Word, lookup LookupFunc, lookupArray LookupAr
 		}
 	}
 	if !hasArrayAt {
-		return []lexer.Word{expandVarsInWord(w, lookup)}
+		return []lexer.Word{expandVarsInWord(w, lookup, isSet)}
 	}
 
 	// Process parts, splitting on array-@ expansions in DoubleQuoted context.
@@ -71,17 +72,17 @@ func expandVarsInWordMulti(w lexer.Word, lookup LookupFunc, lookupArray LookupAr
 			continue
 		}
 		if part.Quote == lexer.Unquoted {
-			cur = append(cur, expandDollarParts(part.Text, lookup)...)
+			cur = append(cur, expandDollarParts(part.Text, lookup, isSet)...)
 			continue
 		}
 		if part.Quote != lexer.DoubleQuoted || !containsArrayAt(part.Text) {
-			expanded := expandDollar(part.Text, lookup)
+			expanded := expandDollar(part.Text, lookup, isSet)
 			cur = append(cur, lexer.WordPart{Text: expanded, Quote: part.Quote})
 			continue
 		}
 
 		// DoubleQuoted part with ${arr[@]} or $@ — split into elements.
-		elements := expandDollarMulti(part.Text, lookup, lookupArray)
+		elements := expandDollarMulti(part.Text, lookup, lookupArray, isSet)
 		if len(elements) == 0 {
 			// Empty array — the word should be removed entirely
 			// (unless there are other non-empty parts).
@@ -153,7 +154,7 @@ func containsArrayAt(text string) bool {
 // expandDollarMulti expands a DoubleQuoted text that may contain $@ or
 // ${arr[@]}, returning separate elements for array-@ expansions. Non-array
 // parts are concatenated into adjacent elements.
-func expandDollarMulti(text string, lookup LookupFunc, lookupArray LookupArrayFunc) []string {
+func expandDollarMulti(text string, lookup LookupFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) []string {
 	runes := []rune(text)
 	var elements []string
 	var buf strings.Builder
@@ -224,7 +225,7 @@ func expandDollarMulti(text string, lookup LookupFunc, lookupArray LookupArrayFu
 							buf.WriteString(elems[len(elems)-1])
 						}
 					} else if !ok {
-						buf.WriteString(expandParam(content, lookup))
+						buf.WriteString(expandParam(content, lookup, isSet))
 					} else {
 						// ok && len(elems)==0: empty array
 						hadEmptyArray = true
@@ -232,7 +233,7 @@ func expandDollarMulti(text string, lookup LookupFunc, lookupArray LookupArrayFu
 					continue
 				}
 
-				buf.WriteString(expandParam(content, lookup))
+				buf.WriteString(expandParam(content, lookup, isSet))
 				continue
 			}
 			// Unclosed brace.
@@ -292,7 +293,7 @@ func appendBuf(buf *strings.Builder, elements []string) []string {
 // literal text is marked Unquoted, expansion results are marked Expanded.
 // This preserves the boundary between literal and expanded text so that
 // word splitting can act only on expanded portions.
-func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
+func expandDollarParts(text string, lookup LookupFunc, isSet IsSetFunc) []lexer.WordPart {
 	if !strings.ContainsRune(text, '$') {
 		return []lexer.WordPart{{Text: text, Quote: lexer.Unquoted}}
 	}
@@ -340,7 +341,7 @@ func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
 				content := string(runes[start:i])
 				i++ // skip }
 				flushLiteral()
-				parts = append(parts, lexer.WordPart{Text: expandParam(content, lookup), Quote: lexer.Expanded})
+				parts = append(parts, lexer.WordPart{Text: expandParam(content, lookup, isSet), Quote: lexer.Expanded})
 				consumed = false // already handled
 			}
 		case runes[i] == '?':
@@ -398,7 +399,7 @@ func expandDollarParts(text string, lookup LookupFunc) []lexer.WordPart {
 //	${var##pattern}  remove longest prefix match
 //	${var%pattern}   remove shortest suffix match
 //	${var%%pattern}  remove longest suffix match
-func expandParam(content string, lookup LookupFunc) string {
+func expandParam(content string, lookup LookupFunc, isSet IsSetFunc) string {
 	// ${#var} — string length / array length.
 	if len(content) > 1 && content[0] == '#' {
 		rest := content[1:]
@@ -439,41 +440,90 @@ func expandParam(content string, lookup LookupFunc) string {
 		return lookup(name)
 	}
 
+	// For operators that provide defaults/alternatives, check isSet first
+	// to avoid triggering nounset errors when a default is available.
+	switch op {
+	case ":-", "-", ":+", "+", ":=", "=", ":?", "?":
+		var varSet bool
+		var value string
+		if isSet != nil {
+			// Use isSet to avoid triggering nounset for unset vars.
+			varSet = isSet(name)
+			if varSet {
+				value = lookup(name)
+			}
+		} else {
+			// No isSet callback — call lookup directly (no nounset protection).
+			// Treat non-empty value as "set" (matches old behavior).
+			value = lookup(name)
+			varSet = true // assume set; colon variants still check value==""
+		}
+		// Expand variables in the word part.
+		word = expandDollar(word, lookup, isSet)
+
+		switch op {
+		case ":-":
+			// Use default if unset or empty.
+			if !varSet || value == "" {
+				return word
+			}
+			return value
+		case "-":
+			// Use default if unset.
+			if !varSet {
+				return word
+			}
+			return value
+		case ":+":
+			// Use alternative if set and non-empty.
+			if varSet && value != "" {
+				return word
+			}
+			return ""
+		case "+":
+			// Use alternative if set.
+			if varSet {
+				return word
+			}
+			return ""
+		case ":=":
+			if !varSet || value == "" {
+				return word
+			}
+			return value
+		case "=":
+			if !varSet {
+				return word
+			}
+			return value
+		case ":?":
+			if !varSet || value == "" {
+				msg := word
+				if msg == "" {
+					msg = "parameter null or not set"
+				}
+				fmt.Fprintf(os.Stderr, "gosh: %s: %s\n", name, msg)
+				return ""
+			}
+			return value
+		case "?":
+			if !varSet {
+				msg := word
+				if msg == "" {
+					msg = "parameter null or not set"
+				}
+				fmt.Fprintf(os.Stderr, "gosh: %s: %s\n", name, msg)
+				return ""
+			}
+			return value
+		}
+	}
+
 	value := lookup(name)
 	// Expand variables in the word part.
-	word = expandDollar(word, lookup)
+	word = expandDollar(word, lookup, isSet)
 
 	switch op {
-	case ":-", "-":
-		// Use default if empty/unset.
-		if value == "" {
-			return word
-		}
-		return value
-	case ":+", "+":
-		// Use alternative if set and non-empty.
-		if value != "" {
-			return word
-		}
-		return ""
-	case ":=", "=":
-		// Assign default — we can't modify variables from the expander,
-		// so behave like :- (return default without assigning).
-		if value == "" {
-			return word
-		}
-		return value
-	case ":?", "?":
-		// Error if unset/empty.
-		if value == "" {
-			msg := word
-			if msg == "" {
-				msg = "parameter null or not set"
-			}
-			fmt.Fprintf(os.Stderr, "gosh: %s: %s\n", name, msg)
-			return ""
-		}
-		return value
 	case "#":
 		return removePrefix(value, word, false)
 	case "##":
@@ -658,7 +708,7 @@ func evalArraySubscript(name string, lookup LookupFunc) string {
 		return name
 	}
 	// Expand $vars in the subscript.
-	subscript = expandDollar(subscript, lookup)
+	subscript = expandDollar(subscript, lookup, nil)
 	// Evaluate as arithmetic.
 	val, err := EvalArith(subscript, lookup, nil)
 	if err != nil {
@@ -669,7 +719,7 @@ func evalArraySubscript(name string, lookup LookupFunc) string {
 
 // expandDollar scans text for $VAR, ${VAR}, $?, $$ and replaces
 // them with values from the lookup function.
-func expandDollar(text string, lookup LookupFunc) string {
+func expandDollar(text string, lookup LookupFunc, isSet IsSetFunc) string {
 	if !strings.ContainsRune(text, '$') {
 		return text
 	}
@@ -707,7 +757,7 @@ func expandDollar(text string, lookup LookupFunc) string {
 			}
 			content := string(runes[start:i])
 			i++ // skip }
-			result.WriteString(expandParam(content, lookup))
+			result.WriteString(expandParam(content, lookup, isSet))
 
 		case runes[i] == '?':
 			result.WriteString(lookup("?"))

@@ -39,64 +39,69 @@ type SubstFunc func(cmd string) (string, error)
 // quotes). Returns (nil, false) for "*" subscripts and non-array vars.
 type LookupArrayFunc func(name string) ([]string, bool)
 
+// IsSetFunc returns true if the named variable is set (exists) in the
+// shell state. Used to avoid triggering nounset errors when parameter
+// expansion operators like ${var:-default} provide fallback values.
+type IsSetFunc func(name string) bool
+
 // Expand walks the AST and performs all expansion phases.
-// It modifies the AST in place. lookupArray may be nil.
-func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
+// It modifies the AST in place. lookupArray and isSet may be nil.
+func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) {
 	for i := range list.Entries {
-		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar, lookupArray)
+		expandPipeline(list.Entries[i].Pipeline, lookup, subst, setVar, lookupArray, isSet)
 	}
 }
 
 // expandRedirects performs tilde, arithmetic, command substitution, and
 // variable expansion on redirect filenames. No word splitting or globbing.
-func expandRedirects(redirs []parser.Redirect, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
+func expandRedirects(redirs []parser.Redirect, lookup LookupFunc, subst SubstFunc, setVar SetFunc, isSet IsSetFunc) {
 	for i := range redirs {
 		redirs[i].File = expandTilde(redirs[i].File, lookup)
 		redirs[i].File = expandArithInWord(redirs[i].File, lookup, setVar)
 		if subst != nil {
 			redirs[i].File = expandCmdSubstInWord(redirs[i].File, subst)
 		}
-		redirs[i].File = expandVarsInWord(redirs[i].File, lookup)
+		redirs[i].File = expandVarsInWord(redirs[i].File, lookup, isSet)
 	}
 }
 
-func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
+func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) {
 	for _, cmd := range pipe.Cmds {
 		switch c := cmd.(type) {
 		case *parser.SimpleCmd:
-			expandCommand(c, lookup, subst, setVar, lookupArray)
+			expandCommand(c, lookup, subst, setVar, lookupArray, isSet)
 		case *parser.IfCmd:
 			// IfCmd branches are expanded lazily by the executor.
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.WhileCmd:
 			// WhileCmd condition and body are expanded lazily.
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.UntilCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.ForCmd:
 			// ForCmd words and body are expanded lazily.
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.ArithForCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.CaseCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.FuncDef:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.SelectCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.DblBracketCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.SubshellCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		case *parser.ArithCmd:
-			expandRedirects(c.Redirects, lookup, subst, setVar)
+			expandRedirects(c.Redirects, lookup, subst, setVar, isSet)
 		default:
 			_ = c
 		}
 	}
 }
 
-func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
+func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc, isSet IsSetFunc) {
 	// Phase 0: brace expansion on args only.
 	cmd.Args = expandBracesInArgs(cmd.Args)
 
@@ -146,26 +151,32 @@ func expandCommand(cmd *parser.SimpleCmd, lookup LookupFunc, subst SubstFunc, se
 
 	// Phase 3: variable expansion on all words.
 	for i := range cmd.Assigns {
-		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup)
+		cmd.Assigns[i].Value = expandVarsInWord(cmd.Assigns[i].Value, lookup, isSet)
 		for j := range cmd.Assigns[i].Array {
-			cmd.Assigns[i].Array[j] = expandVarsInWord(cmd.Assigns[i].Array[j], lookup)
+			cmd.Assigns[i].Array[j] = expandVarsInWord(cmd.Assigns[i].Array[j], lookup, isSet)
 		}
 	}
 	// For args, "${arr[@]}" and "$@" in double quotes may produce multiple words.
 	var newArgs []lexer.Word
 	for _, arg := range cmd.Args {
-		newArgs = append(newArgs, expandVarsInWordMulti(arg, lookup, lookupArray)...)
+		newArgs = append(newArgs, expandVarsInWordMulti(arg, lookup, lookupArray, isSet)...)
 	}
 	cmd.Args = newArgs
 	for i := range cmd.Redirects {
-		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup)
+		cmd.Redirects[i].File = expandVarsInWord(cmd.Redirects[i].File, lookup, isSet)
 	}
 
 	// Phase 3.5: word splitting on args only (not assignments or redirects).
 	// Split unquoted expansion results on IFS characters.
-	ifs := lookup("IFS")
-	if ifs == "" {
-		ifs = " \t\n" // default IFS when unset
+	// Look up IFS without triggering nounset — it's an internal shell lookup.
+	var ifs string
+	if isSet != nil && !isSet("IFS") {
+		ifs = " \t\n"
+	} else {
+		ifs = lookup("IFS")
+		if ifs == "" {
+			ifs = " \t\n"
+		}
 	}
 	cmd.Args = splitFieldsInArgs(cmd.Args, ifs)
 
@@ -359,13 +370,13 @@ func buildGlobPattern(w lexer.Word) string {
 // ExpandWord is the exported version for use by the executor
 // (e.g., to expand a single word for redirect filenames).
 func ExpandWord(w lexer.Word, lookup LookupFunc) string {
-	return expandVarsInWord(w, lookup).String()
+	return expandVarsInWord(w, lookup, nil).String()
 }
 
 // ExpandDollar is the exported version of expandDollar for use by the
 // executor (e.g., to expand $VAR references in arithmetic command expressions).
 func ExpandDollar(text string, lookup LookupFunc) string {
-	return expandDollar(text, lookup)
+	return expandDollar(text, lookup, nil)
 }
 
 // isNameStart returns true if ch can start a shell variable name.

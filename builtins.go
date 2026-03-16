@@ -845,13 +845,19 @@ func builtinEval(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 func builtinTrap(state *shellState, args []string, stdin, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		// List all traps.
+		state.trapsMu.RLock()
 		names := make([]string, 0, len(state.traps))
 		for name := range state.traps {
 			names = append(names, name)
 		}
+		trapsCopy := make(map[string]string, len(state.traps))
+		for k, v := range state.traps {
+			trapsCopy[k] = v
+		}
+		state.trapsMu.RUnlock()
 		sort.Strings(names)
 		for _, name := range names {
-			fmt.Fprintf(stdout, "trap -- %s %s\n", strconv.Quote(state.traps[name]), name)
+			fmt.Fprintf(stdout, "trap -- %s %s\n", strconv.Quote(trapsCopy[name]), name)
 		}
 		return 0
 	}
@@ -873,7 +879,9 @@ func builtinTrap(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 
 		if command == "-" {
 			// Remove trap.
+			state.trapsMu.Lock()
 			delete(state.traps, name)
+			state.trapsMu.Unlock()
 			// For real signals, stop notifying (reset to default).
 			if sig != 0 {
 				signal.Reset(sig)
@@ -883,7 +891,9 @@ func builtinTrap(state *shellState, args []string, stdin, stdout, stderr *os.Fil
 				}
 			}
 		} else {
+			state.trapsMu.Lock()
 			state.traps[name] = command
+			state.trapsMu.Unlock()
 			// For real signals, ensure we're notified.
 			if sig != 0 {
 				signal.Notify(state.sigCh, sig)

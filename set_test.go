@@ -86,6 +86,65 @@ func TestSetNounsetCombined(t *testing.T) {
 	assertOutput(t, got, "1")
 }
 
+// --- set -u with parameter expansion operators ---
+
+func TestSetNounsetDefaultColon(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, "set -u; echo ${UNSET_XYZ:-fallback}")
+	assertOutput(t, got, "fallback")
+	assertStatus(t, s, 0)
+}
+
+func TestSetNounsetDefault(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, "set -u; echo ${UNSET_XYZ-fallback}")
+	assertOutput(t, got, "fallback")
+	assertStatus(t, s, 0)
+}
+
+func TestSetNounsetAssignDefault(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, "set -u; x=${UNSET_XYZ:-ok}; echo $x")
+	assertOutput(t, got, "ok")
+	assertStatus(t, s, 0)
+}
+
+func TestSetNounsetAlternativeUnset(t *testing.T) {
+	// ${UNSET:+alt} should produce empty, not error.
+	s := testState(t)
+	got, stderr := runCaptureBoth(t, s, "set -u; echo ${UNSET_XYZ:+alt}")
+	assertOutput(t, got, "")
+	if strings.Contains(stderr, "unbound variable") {
+		t.Errorf("nounset should not fire for ${var:+word}, got stderr=%q", stderr)
+	}
+}
+
+func TestSetNounsetAlternativeNonColonUnset(t *testing.T) {
+	// ${UNSET+alt} should produce empty, not error.
+	s := testState(t)
+	got, stderr := runCaptureBoth(t, s, "set -u; echo ${UNSET_XYZ+alt}")
+	assertOutput(t, got, "")
+	if strings.Contains(stderr, "unbound variable") {
+		t.Errorf("nounset should not fire for ${var+word}, got stderr=%q", stderr)
+	}
+}
+
+func TestSetNounsetBareVarStillErrors(t *testing.T) {
+	s := testState(t)
+	_, stderr := runCaptureBoth(t, s, "set -u; echo $UNSET_XYZ")
+	if !strings.Contains(stderr, "unbound variable") {
+		t.Errorf("expected 'unbound variable' for bare $VAR, got stderr=%q", stderr)
+	}
+}
+
+func TestSetNounsetLengthStillErrors(t *testing.T) {
+	s := testState(t)
+	_, stderr := runCaptureBoth(t, s, "set -u; echo ${#UNSET_XYZ}")
+	if !strings.Contains(stderr, "unbound variable") {
+		t.Errorf("expected 'unbound variable' for ${#var}, got stderr=%q", stderr)
+	}
+}
+
 // --- set -x (xtrace) ---
 
 func TestSetXtrace(t *testing.T) {

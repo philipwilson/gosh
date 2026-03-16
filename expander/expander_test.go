@@ -24,80 +24,80 @@ func testLookup(name string) string {
 
 func TestExpandUnquoted(t *testing.T) {
 	list := mustParse(t, "echo $HOME")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user")
 }
 
 func TestExpandDoubleQuoted(t *testing.T) {
 	list := mustParse(t, `echo "$HOME"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user")
 }
 
 func TestExpandSingleQuotedNoExpansion(t *testing.T) {
 	list := mustParse(t, "echo '$HOME'")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "$HOME")
 }
 
 func TestExpandBackslashDollarNoExpansion(t *testing.T) {
 	list := mustParse(t, `echo \$HOME`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "$HOME")
 }
 
 func TestExpandDoubleQuoteBackslashDollar(t *testing.T) {
 	list := mustParse(t, `echo "\$HOME"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "$HOME")
 }
 
 func TestExpandBraces(t *testing.T) {
 	list := mustParse(t, `echo "${HOME}/bin"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user/bin")
 }
 
 func TestExpandMixed(t *testing.T) {
 	list := mustParse(t, `echo "hello $USER, welcome"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello alice, welcome")
 }
 
 func TestExpandMultipleVars(t *testing.T) {
 	list := mustParse(t, `echo $USER@$HOME`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "alice@/home/user")
 }
 
 func TestExpandUndefined(t *testing.T) {
 	// Unquoted $UNDEFINED expands to empty and is removed by word splitting.
 	list := mustParse(t, `echo $UNDEFINED`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo")
 }
 
 func TestExpandExitStatus(t *testing.T) {
 	list := mustParse(t, `echo $?`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "0")
 }
 
 func TestExpandShellPid(t *testing.T) {
 	list := mustParse(t, `echo $$`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "12345")
 }
 
 func TestExpandBareDollar(t *testing.T) {
 	list := mustParse(t, `echo $ `)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "$")
 }
 
 func TestExpandAssignmentValue(t *testing.T) {
 	list := mustParse(t, `DIR=$HOME/bin`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if len(cmd.Assigns) != 1 {
 		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
@@ -109,7 +109,7 @@ func TestExpandAssignmentValue(t *testing.T) {
 
 func TestExpandRedirectFilename(t *testing.T) {
 	list := mustParse(t, `echo hi > $HOME/out.txt`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if cmd.Redirects[0].File.String() != "/home/user/out.txt" {
 		t.Errorf("expected /home/user/out.txt, got %q", cmd.Redirects[0].File)
@@ -118,7 +118,7 @@ func TestExpandRedirectFilename(t *testing.T) {
 
 func TestExpandMixedQuoting(t *testing.T) {
 	list := mustParse(t, `he"$USER"'$HOME'`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "healice$HOME")
 }
 
@@ -126,38 +126,38 @@ func TestExpandMixedQuoting(t *testing.T) {
 
 func TestTildeAlone(t *testing.T) {
 	list := mustParse(t, "echo ~")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user")
 }
 
 func TestTildeSlashPath(t *testing.T) {
 	list := mustParse(t, "echo ~/bin")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user/bin")
 }
 
 func TestTildeQuotedNoExpansion(t *testing.T) {
 	list := mustParse(t, `echo "~"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "~")
 }
 
 func TestTildeSingleQuotedNoExpansion(t *testing.T) {
 	list := mustParse(t, "echo '~/bin'")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "~/bin")
 }
 
 func TestTildeMidWord(t *testing.T) {
 	// ~ only expands at start of word
 	list := mustParse(t, "echo foo~bar")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "foo~bar")
 }
 
 func TestTildeInAssignment(t *testing.T) {
 	list := mustParse(t, "DIR=~/bin")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if cmd.Assigns[0].Value.String() != "/home/user/bin" {
 		t.Errorf("expected /home/user/bin, got %q", cmd.Assigns[0].Value)
@@ -181,7 +181,7 @@ func setupGlobDir(t *testing.T) string {
 func TestGlobStar(t *testing.T) {
 	dir := setupGlobDir(t)
 	list := mustParse(t, "echo "+dir+"/*.go")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 
 	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	// Should expand to bar.go and foo.go (sorted)
@@ -200,7 +200,7 @@ func TestGlobStar(t *testing.T) {
 func TestGlobQuestion(t *testing.T) {
 	dir := setupGlobDir(t)
 	list := mustParse(t, "echo "+dir+"/ba?.go")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 
 	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
@@ -215,7 +215,7 @@ func TestGlobNoMatch(t *testing.T) {
 	dir := setupGlobDir(t)
 	pattern := dir + "/*.rs"
 	list := mustParse(t, "echo "+pattern)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 
 	// No .rs files exist — glob should keep the pattern as-is.
 	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
@@ -231,7 +231,7 @@ func TestGlobQuotedStar(t *testing.T) {
 	dir := setupGlobDir(t)
 	// Quoted * should NOT glob-expand.
 	list := mustParse(t, `echo "`+dir+`/*.go"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 
 	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
@@ -245,7 +245,7 @@ func TestGlobQuotedStar(t *testing.T) {
 func TestGlobSingleQuotedStar(t *testing.T) {
 	dir := setupGlobDir(t)
 	list := mustParse(t, "echo '"+dir+"/*.go'")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 
 	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	if len(args) != 2 {
@@ -259,7 +259,7 @@ func TestGlobSingleQuotedStar(t *testing.T) {
 func TestGlobAllFiles(t *testing.T) {
 	dir := setupGlobDir(t)
 	list := mustParse(t, "echo "+dir+"/*")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 
 	args := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0]).ArgStrings()
 	// echo + 4 files
@@ -286,31 +286,31 @@ func mockSubst(cmd string) (string, error) {
 
 func TestCmdSubstBasic(t *testing.T) {
 	list := mustParse(t, "echo $(whoami)")
-	Expand(list, testLookup, mockSubst, nil, nil)
+	Expand(list, testLookup, mockSubst, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "alice")
 }
 
 func TestCmdSubstBacktick(t *testing.T) {
 	list := mustParse(t, "echo `whoami`")
-	Expand(list, testLookup, mockSubst, nil, nil)
+	Expand(list, testLookup, mockSubst, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "alice")
 }
 
 func TestCmdSubstInDoubleQuotes(t *testing.T) {
 	list := mustParse(t, `echo "hello $(whoami)"`)
-	Expand(list, testLookup, mockSubst, nil, nil)
+	Expand(list, testLookup, mockSubst, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello alice")
 }
 
 func TestCmdSubstMixedWithText(t *testing.T) {
 	list := mustParse(t, "echo pre$(whoami)post")
-	Expand(list, testLookup, mockSubst, nil, nil)
+	Expand(list, testLookup, mockSubst, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "prealicepost")
 }
 
 func TestCmdSubstInAssignment(t *testing.T) {
 	list := mustParse(t, "USER=$(whoami)")
-	Expand(list, testLookup, mockSubst, nil, nil)
+	Expand(list, testLookup, mockSubst, nil, nil, nil)
 	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	if len(cmd.Assigns) != 1 {
 		t.Fatalf("expected 1 assignment, got %d", len(cmd.Assigns))
@@ -324,7 +324,7 @@ func TestCmdSubstNilSubstFunc(t *testing.T) {
 	// With nil SubstFunc, command substitutions are left as-is
 	// (the part remains but no replacement happens).
 	list := mustParse(t, "echo $(whoami)")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	// The CmdSubst part should remain with its text "whoami".
 	cmd := simpleCmd(t, list.Entries[0].Pipeline.Cmds[0])
 	args := cmd.ArgStrings()
@@ -369,7 +369,7 @@ func TestExpandPositionalParams(t *testing.T) {
 	}
 
 	list := mustParse(t, `echo $1 $2 $# "$@" $0`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello", "world", "2", "hello world", "gosh")
 }
 
@@ -384,7 +384,7 @@ func TestWordSplitBasic(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo $X`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b", "c")
 }
 
@@ -397,7 +397,7 @@ func TestWordSplitNoSplitInDoubleQuotes(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo "$X"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a b c")
 }
 
@@ -405,7 +405,7 @@ func TestWordSplitEmptyRemoved(t *testing.T) {
 	// $EMPTY (empty string, unquoted) is removed
 	lookup := func(name string) string { return "" }
 	list := mustParse(t, `echo $EMPTY world`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "world")
 }
 
@@ -413,7 +413,7 @@ func TestWordSplitEmptyQuotedPreserved(t *testing.T) {
 	// "$EMPTY" preserves the empty argument
 	lookup := func(name string) string { return "" }
 	list := mustParse(t, `echo "$EMPTY" world`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "", "world")
 }
 
@@ -426,7 +426,7 @@ func TestWordSplitMixedWithLiteral(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo hello${X}world`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "helloa", "bworld")
 }
 
@@ -439,7 +439,7 @@ func TestWordSplitLeadingIFS(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo hello$X`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello", "a", "b")
 }
 
@@ -452,7 +452,7 @@ func TestWordSplitMultipleSpaces(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo $X`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b")
 }
 
@@ -465,7 +465,7 @@ func TestWordSplitLeadingTrailingWhitespace(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo $X`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b")
 }
 
@@ -475,7 +475,7 @@ func TestWordSplitCmdSubst(t *testing.T) {
 		return "a b c", nil
 	}
 	list := mustParse(t, `echo $(cmd)`)
-	Expand(list, testLookup, subst, nil, nil)
+	Expand(list, testLookup, subst, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b", "c")
 }
 
@@ -485,7 +485,7 @@ func TestWordSplitCmdSubstQuoted(t *testing.T) {
 		return "a b c", nil
 	}
 	list := mustParse(t, `echo "$(cmd)"`)
-	Expand(list, testLookup, subst, nil, nil)
+	Expand(list, testLookup, subst, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a b c")
 }
 
@@ -498,7 +498,7 @@ func TestWordSplitForLoop(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo $X done`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b", "c", "done")
 }
 
@@ -507,56 +507,56 @@ func TestWordSplitForLoop(t *testing.T) {
 func TestParamDefault(t *testing.T) {
 	// ${var:-default} returns default when var is empty
 	list := mustParse(t, `echo ${X:-fallback}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "fallback")
 }
 
 func TestParamDefaultSet(t *testing.T) {
 	// ${var:-default} returns var when set
 	list := mustParse(t, `echo ${USER:-nobody}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "alice")
 }
 
 func TestParamDefaultWithExpansion(t *testing.T) {
 	// ${var:-$OTHER} expands the default word
 	list := mustParse(t, `echo ${X:-$HOME}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user")
 }
 
 func TestParamAlternative(t *testing.T) {
 	// ${var:+alt} returns alt when var is set and non-empty
 	list := mustParse(t, `echo ${USER:+yes}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "yes")
 }
 
 func TestParamAlternativeEmpty(t *testing.T) {
 	// ${var:+alt} returns empty when var is unset
 	list := mustParse(t, `echo ${X:+yes}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo")
 }
 
 func TestParamLength(t *testing.T) {
 	// ${#var} returns string length
 	list := mustParse(t, `echo ${#USER}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "5") // "alice" = 5
 }
 
 func TestParamLengthEmpty(t *testing.T) {
 	// ${#var} for unset var returns 0
 	list := mustParse(t, `echo ${#UNDEFINED}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "0")
 }
 
 func TestParamLengthSpecial(t *testing.T) {
 	// ${#?} = length of $?
 	list := mustParse(t, `echo ${#?}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "1") // "0" = 1 char
 }
 
@@ -569,7 +569,7 @@ func TestParamStripSuffix(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${FILE%.*}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello.tar")
 }
 
@@ -582,7 +582,7 @@ func TestParamStripSuffixLong(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${FILE%%.*}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello")
 }
 
@@ -595,7 +595,7 @@ func TestParamStripPrefix(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${PATH#*/}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "usr/local/bin")
 }
 
@@ -608,7 +608,7 @@ func TestParamStripPrefixLong(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${PATH##*/}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "bin")
 }
 
@@ -621,28 +621,28 @@ func TestParamNoMatch(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X%*.go}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello")
 }
 
 func TestParamErrorMsg(t *testing.T) {
 	// ${var:?msg} with unset var returns empty (error goes to stderr)
 	list := mustParse(t, `echo ${X:?missing}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo")
 }
 
 func TestParamInDoubleQuotes(t *testing.T) {
 	// Parameter expansion works inside double quotes
 	list := mustParse(t, `echo "${USER:-nobody}"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "alice")
 }
 
 func TestParamDefaultInDoubleQuotes(t *testing.T) {
 	// ${var:-default} in double quotes, var unset
 	list := mustParse(t, `echo "${X:-fallback}"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "fallback")
 }
 
@@ -656,7 +656,7 @@ func TestParamReplaceSingle(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo "${X/world/earth}"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello earth")
 }
 
@@ -668,7 +668,7 @@ func TestParamReplaceAll(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X//a/x}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "xxbxx")
 }
 
@@ -680,7 +680,7 @@ func TestParamDeleteFirst(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo "${X/o}"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hell world")
 }
 
@@ -692,7 +692,7 @@ func TestParamDeleteAll(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X//l}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "heo")
 }
 
@@ -704,7 +704,7 @@ func TestParamReplaceGlob(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo "${X/h*/X}"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "X")
 }
 
@@ -718,7 +718,7 @@ func TestSubstringFromStart(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X:0:5}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello")
 }
 
@@ -730,7 +730,7 @@ func TestSubstringOffset(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X:6}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "world")
 }
 
@@ -743,7 +743,7 @@ func TestSubstringNegativeOffset(t *testing.T) {
 	}
 	// Negative offset: space before - to distinguish from ${var:-default}
 	list := mustParse(t, `echo "${X: -5}"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "world")
 }
 
@@ -755,7 +755,7 @@ func TestSubstringNegativeLength(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo "${X:0:-1}"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello worl")
 }
 
@@ -767,14 +767,14 @@ func TestSubstringBeyondLength(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X:10}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo")
 }
 
 func TestSubstringEmpty(t *testing.T) {
 	lookup := func(name string) string { return "" }
 	list := mustParse(t, `echo ${X:0:3}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo")
 }
 
@@ -782,115 +782,115 @@ func TestSubstringEmpty(t *testing.T) {
 
 func TestBraceCommaBasic(t *testing.T) {
 	list := mustParse(t, "echo {a,b,c}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b", "c")
 }
 
 func TestBracePrefixSuffix(t *testing.T) {
 	list := mustParse(t, "echo pre{a,b}suf")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "preasuf", "prebsuf")
 }
 
 func TestBraceNested(t *testing.T) {
 	list := mustParse(t, "echo {a,{b,c}}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b", "c")
 }
 
 func TestBraceCartesian(t *testing.T) {
 	list := mustParse(t, "echo {a,b}{1,2}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a1", "a2", "b1", "b2")
 }
 
 func TestBraceEmptyAlt(t *testing.T) {
 	list := mustParse(t, "echo pre{a,}suf")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "preasuf", "presuf")
 }
 
 func TestBraceIntSequence(t *testing.T) {
 	list := mustParse(t, "echo {1..5}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "1", "2", "3", "4", "5")
 }
 
 func TestBraceReverseInt(t *testing.T) {
 	list := mustParse(t, "echo {5..1}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "5", "4", "3", "2", "1")
 }
 
 func TestBraceZeroPadded(t *testing.T) {
 	list := mustParse(t, "echo {01..03}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "01", "02", "03")
 }
 
 func TestBraceLetterSequence(t *testing.T) {
 	list := mustParse(t, "echo {a..e}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "a", "b", "c", "d", "e")
 }
 
 func TestBraceReverseLetterSequence(t *testing.T) {
 	list := mustParse(t, "echo {e..a}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "e", "d", "c", "b", "a")
 }
 
 func TestBraceNegativeSequence(t *testing.T) {
 	list := mustParse(t, "echo {-2..2}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "-2", "-1", "0", "1", "2")
 }
 
 func TestBraceSequenceWithPrefixSuffix(t *testing.T) {
 	list := mustParse(t, "echo file{1..3}.txt")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "file1.txt", "file2.txt", "file3.txt")
 }
 
 func TestBraceSingleElemLiteral(t *testing.T) {
 	list := mustParse(t, "echo {a}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "{a}")
 }
 
 func TestBraceEmptyLiteral(t *testing.T) {
 	list := mustParse(t, "echo {}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "{}")
 }
 
 func TestBraceDoubleQuoted(t *testing.T) {
 	list := mustParse(t, `echo "{a,b}"`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "{a,b}")
 }
 
 func TestBraceSingleQuoted(t *testing.T) {
 	list := mustParse(t, "echo '{a,b}'")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "{a,b}")
 }
 
 func TestBraceEscaped(t *testing.T) {
 	list := mustParse(t, `echo \{a,b\}`)
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "{a,b}")
 }
 
 func TestBraceVarNotConfused(t *testing.T) {
 	list := mustParse(t, "echo ${HOME}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user")
 }
 
 func TestBraceBeforeVars(t *testing.T) {
 	list := mustParse(t, "echo {$HOME,world}")
-	Expand(list, testLookup, nil, nil, nil)
+	Expand(list, testLookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "/home/user", "world")
 }
 
@@ -927,7 +927,7 @@ func TestExpandCaseUpperAll(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X^^}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "HELLO")
 }
 
@@ -939,7 +939,7 @@ func TestExpandCaseLowerAll(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X,,}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello")
 }
 
@@ -951,7 +951,7 @@ func TestExpandCaseUpperFirst(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X^}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "Hello")
 }
 
@@ -963,7 +963,7 @@ func TestExpandCaseLowerFirst(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X,}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "hello")
 }
 
@@ -975,13 +975,13 @@ func TestExpandCaseUpperPattern(t *testing.T) {
 		return ""
 	}
 	list := mustParse(t, `echo ${X^^[fo]}`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "FOObar")
 }
 
 func TestExpandCaseEmpty(t *testing.T) {
 	lookup := func(name string) string { return "" }
 	list := mustParse(t, `echo "${X^^}"`)
-	Expand(list, lookup, nil, nil, nil)
+	Expand(list, lookup, nil, nil, nil, nil)
 	expectArgs(t, list, 0, "echo", "")
 }

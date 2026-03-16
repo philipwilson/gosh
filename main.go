@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -60,6 +61,7 @@ type shellState struct {
 	noErrexit        int                  // >0 suppresses errexit (condition contexts, &&/|| LHS)
 	nounsetError     bool                 // set when a nounset violation occurs during expansion
 	lastBgPid        int                  // $! — PID of last background command
+	startTime        time.Time            // for $SECONDS
 }
 
 func newShellState() *shellState {
@@ -87,6 +89,7 @@ func newShellState() *shellState {
 		s.vars["PS2"] = "> "
 	}
 
+	s.startTime = time.Now()
 	s.traps = make(map[string]string)
 	s.pendingSignals = make(map[string]bool)
 	s.sigCh = make(chan os.Signal, 8)
@@ -142,6 +145,10 @@ func (s *shellState) lookup(name string) string {
 		return strings.Join(s.positionalParams, " ")
 	case "0":
 		return "gosh"
+	case "RANDOM":
+		return strconv.Itoa(rand.Intn(32768))
+	case "SECONDS":
+		return strconv.Itoa(int(time.Since(s.startTime).Seconds()))
 	default:
 		// Positional parameters: $1, $2, ..., ${10}, etc.
 		if n, err := strconv.Atoi(name); err == nil && n >= 1 {
@@ -264,6 +271,15 @@ func (s *shellState) environ() []string {
 }
 
 func (s *shellState) setVar(name, value string) {
+	// Special variable: SECONDS resets the timer.
+	if name == "SECONDS" {
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			n = 0
+		}
+		s.startTime = time.Now().Add(-time.Duration(n) * time.Second)
+		return
+	}
 	// Array element assignment: arr[N]=value
 	if arrName, subscript, ok := parseArrayRef(name); ok {
 		idx, err := strconv.Atoi(subscript)

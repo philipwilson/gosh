@@ -4,6 +4,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -495,4 +496,96 @@ func TestProcSubstNested(t *testing.T) {
 	s := testState(t)
 	got := runCapture(t, s, `cat <(echo $(echo nested))`)
 	assertOutput(t, got, "nested")
+}
+
+// --- Until loop ---
+
+func TestUntilBasic(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `X=0; until [ $X -eq 3 ]; do X=$((X+1)); done; echo $X`)
+	assertOutput(t, got, "3")
+}
+
+func TestUntilFalseBody(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `until true; do echo no; done; echo done`)
+	assertOutput(t, got, "done")
+}
+
+func TestUntilBreak(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `until false; do break; done; echo ok`)
+	assertOutput(t, got, "ok")
+}
+
+// --- $RANDOM ---
+
+func TestRandom(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `echo $RANDOM`)
+	n, err := strconv.Atoi(got)
+	if err != nil {
+		t.Fatalf("$RANDOM not a number: %q", got)
+	}
+	if n < 0 || n >= 32768 {
+		t.Errorf("$RANDOM = %d, want 0-32767", n)
+	}
+}
+
+func TestRandomDiffers(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `A=$RANDOM; B=$RANDOM; test "$A" != "$B" && echo diff`)
+	assertOutput(t, got, "diff")
+}
+
+// --- $SECONDS ---
+
+func TestSeconds(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `echo $SECONDS`)
+	n, err := strconv.Atoi(got)
+	if err != nil {
+		t.Fatalf("$SECONDS not a number: %q", got)
+	}
+	if n < 0 {
+		t.Errorf("$SECONDS = %d, want >= 0", n)
+	}
+}
+
+func TestSecondsReset(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `SECONDS=0; echo $SECONDS`)
+	assertOutput(t, got, "0")
+}
+
+// --- BASH_REMATCH ---
+
+func TestRematchFull(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `RE='([a-z]+)([0-9]+)'; [[ "hello123" =~ $RE ]]; echo ${BASH_REMATCH[0]}`)
+	assertOutput(t, got, "hello123")
+}
+
+func TestRematchGroup1(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `RE='([a-z]+)([0-9]+)'; [[ "hello123" =~ $RE ]]; echo ${BASH_REMATCH[1]}`)
+	assertOutput(t, got, "hello")
+}
+
+func TestRematchGroup2(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `RE='([a-z]+)([0-9]+)'; [[ "hello123" =~ $RE ]]; echo ${BASH_REMATCH[2]}`)
+	assertOutput(t, got, "123")
+}
+
+func TestRematchCount(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `RE='(.)(.)(.)'; [[ "abc" =~ $RE ]]; echo ${#BASH_REMATCH[@]}`)
+	assertOutput(t, got, "4")
+}
+
+func TestRematchNoMatch(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `[[ "abc" =~ [0-9]+ ]]; echo ${#BASH_REMATCH[@]}`)
+	assertOutput(t, got, "0")
 }

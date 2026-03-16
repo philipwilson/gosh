@@ -237,6 +237,11 @@ func cloneCommand(c Command) Command {
 			Condition: CloneList(c.Condition),
 			Body:      CloneList(c.Body),
 		}
+	case *UntilCmd:
+		return &UntilCmd{
+			Condition: CloneList(c.Condition),
+			Body:      CloneList(c.Body),
+		}
 	case *ForCmd:
 		words := make([]lexer.Word, len(c.Words))
 		for i, w := range c.Words {
@@ -357,6 +362,20 @@ func (c *WhileCmd) node()    {}
 func (c *WhileCmd) command() {}
 func (c *WhileCmd) String() string {
 	return "While[cond=" + c.Condition.String() + " body=" + c.Body.String() + "]"
+}
+
+// --- UntilCmd ---
+
+// UntilCmd represents: until list; do list; done
+type UntilCmd struct {
+	Condition *List
+	Body      *List
+}
+
+func (c *UntilCmd) node()    {}
+func (c *UntilCmd) command() {}
+func (c *UntilCmd) String() string {
+	return "Until[cond=" + c.Condition.String() + " body=" + c.Body.String() + "]"
 }
 
 // --- ForCmd ---

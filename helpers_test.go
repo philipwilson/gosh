@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"gosh/lexer"
 	"gosh/parser"
@@ -23,6 +24,7 @@ func testState(t *testing.T) *shellState {
 		traps:          make(map[string]string),
 		pendingSignals: make(map[string]bool),
 		sigCh:          make(chan os.Signal, 8),
+		startTime:      time.Now(),
 	}
 	s.vars["HOME"] = home
 	s.vars["PATH"] = "/bin:/usr/bin"

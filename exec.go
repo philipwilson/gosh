@@ -313,6 +313,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execIf(state, c, stdin, stdout)
 	case *parser.WhileCmd:
 		return execWhile(state, c, stdin, stdout)
+	case *parser.UntilCmd:
+		return execUntil(state, c, stdin, stdout)
 	case *parser.ForCmd:
 		return execFor(state, c, stdin, stdout)
 	case *parser.ArithForCmd:
@@ -458,6 +460,41 @@ func execWhile(state *shellState, cmd *parser.WhileCmd, stdin, stdout *os.File) 
 			state.breakFlag = false
 			// A while loop that exits because its condition is false
 			// has exit status 0 (bash behavior).
+			state.lastStatus = 0
+			break
+		}
+
+		body := parser.CloneList(cmd.Body)
+		execList(state, body, stdin, stdout)
+
+		if state.exitFlag || state.returnFlag || state.breakFlag {
+			if state.breakFlag {
+				state.breakFlag = false
+			}
+			return state.lastStatus
+		}
+		if state.continueFlag {
+			state.continueFlag = false
+		}
+	}
+
+	return state.lastStatus
+}
+
+// execUntil evaluates an until/do/done loop. Like while but with
+// an inverted condition: runs body while condition is non-zero.
+func execUntil(state *shellState, cmd *parser.UntilCmd, stdin, stdout *os.File) int {
+	state.loopDepth++
+	defer func() { state.loopDepth-- }()
+
+	for {
+		cond := parser.CloneList(cmd.Condition)
+		state.noErrexit++
+		execList(state, cond, stdin, stdout)
+		state.noErrexit--
+
+		if state.lastStatus == 0 || state.breakFlag {
+			state.breakFlag = false
 			state.lastStatus = 0
 			break
 		}
@@ -1036,6 +1073,7 @@ func cloneShellState(state *shellState) *shellState {
 		optXtrace:        state.optXtrace,
 		optPipefail:      state.optPipefail,
 		termFd:           state.termFd,
+		startTime:        state.startTime,
 	}
 	for k, v := range state.vars {
 		s.vars[k] = v

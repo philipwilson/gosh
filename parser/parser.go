@@ -12,7 +12,7 @@ import (
 var reservedWords = map[string]bool{
 	"then": true, "elif": true, "else": true, "fi": true,
 	"do": true, "done": true, "in": true,
-	"esac": true, "}": true,
+	"esac": true, "}": true, "until": true,
 }
 
 // Parse takes a token stream (from lexer.Lex) and returns an AST.
@@ -173,6 +173,8 @@ func (p *parser) parseCommand() (Command, error) {
 			return p.parseIf()
 		case "while":
 			return p.parseWhile()
+		case "until":
+			return p.parseUntil()
 		case "for":
 			return p.parseFor()
 		case "case":
@@ -333,6 +335,29 @@ func (p *parser) parseWhile() (*WhileCmd, error) {
 	}
 
 	return &WhileCmd{Condition: cond, Body: body}, nil
+}
+
+// parseUntil parses: 'until' list 'do' list 'done'
+func (p *parser) parseUntil() (*UntilCmd, error) {
+	p.next() // consume "until"
+
+	cond, err := p.parseList("do")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("do") {
+		return nil, fmt.Errorf("expected 'do', got %s", p.peek())
+	}
+
+	body, err := p.parseList("done")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("done") {
+		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
+	}
+
+	return &UntilCmd{Condition: cond, Body: body}, nil
 }
 
 // parseFor parses: 'for' NAME 'in' word... (';' | EOF-before-do) 'do' list 'done'

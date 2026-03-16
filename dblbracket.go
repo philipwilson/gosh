@@ -35,7 +35,7 @@ func execDblBracket(state *shellState, cmd *parser.DblBracketCmd) int {
 		words[i] = item.word
 	}
 
-	p := &bracketParser{strs: strs, words: words}
+	p := &bracketParser{strs: strs, words: words, state: state}
 	result, err := p.parseOr()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: [[: %v\n", err)
@@ -56,6 +56,7 @@ type bracketParser struct {
 	strs  []string     // expanded string values
 	words []lexer.Word // original words (for quoting info)
 	pos   int
+	state *shellState  // for setting BASH_REMATCH
 }
 
 func (p *bracketParser) peek() string {
@@ -200,7 +201,7 @@ func (p *bracketParser) parsePrimary() (bool, error) {
 	case "=~":
 		p.next()
 		right := p.next()
-		return bracketRegexMatch(left, right)
+		return bracketRegexMatch(p.state, left, right)
 	case "-eq", "-ne", "-lt", "-le", "-gt", "-ge":
 		p.next()
 		right := p.next()
@@ -224,13 +225,24 @@ func bracketPatternMatch(left, right string, rightWord lexer.Word) bool {
 }
 
 // bracketRegexMatch performs regex matching for [[ =~ ]].
+// Sets BASH_REMATCH array with capture groups on match.
 // Returns (matched, nil) on success, or (false, error) if the regex is invalid.
-func bracketRegexMatch(left, right string) (bool, error) {
+func bracketRegexMatch(state *shellState, left, right string) (bool, error) {
 	re, err := regexp.Compile(right)
 	if err != nil {
 		return false, fmt.Errorf("invalid regex: %s", right)
 	}
-	return re.MatchString(left), nil
+	matches := re.FindStringSubmatch(left)
+	if matches == nil {
+		if state != nil {
+			delete(state.arrays, "BASH_REMATCH")
+		}
+		return false, nil
+	}
+	if state != nil {
+		state.arrays["BASH_REMATCH"] = matches
+	}
+	return true, nil
 }
 
 // isFullyUnquoted returns true if all parts of a word are unquoted.

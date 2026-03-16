@@ -381,31 +381,70 @@ func execPipeline(state *shellState, pipe *parser.Pipeline, stdin, stdout *os.Fi
 	}
 }
 
+// withRedirects applies redirections around a compound command body.
+// If no redirects are present, it calls fn directly with the original fds.
+func withRedirects(redirs []parser.Redirect, stdin, stdout *os.File, fn func(*os.File, *os.File) int) int {
+	if len(redirs) == 0 {
+		return fn(stdin, stdout)
+	}
+	fds := [3]*os.File{stdin, stdout, os.Stderr}
+	fds, opened, err := applyRedirects(redirs, fds)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
+		return 1
+	}
+	result := fn(fds[0], fds[1])
+	for _, f := range opened {
+		f.Close()
+	}
+	return result
+}
+
 // execCommand dispatches a Command (simple or compound) for execution.
 func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) int {
 	switch c := cmd.(type) {
 	case *parser.SimpleCmd:
 		return execSimple(state, c, stdin, stdout)
 	case *parser.IfCmd:
-		return execIf(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execIf(state, c, in, out)
+		})
 	case *parser.WhileCmd:
-		return execWhile(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execWhile(state, c, in, out)
+		})
 	case *parser.UntilCmd:
-		return execUntil(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execUntil(state, c, in, out)
+		})
 	case *parser.ForCmd:
-		return execFor(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execFor(state, c, in, out)
+		})
 	case *parser.ArithForCmd:
-		return execArithFor(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execArithFor(state, c, in, out)
+		})
 	case *parser.CaseCmd:
-		return execCase(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execCase(state, c, in, out)
+		})
 	case *parser.SelectCmd:
-		return execSelect(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execSelect(state, c, in, out)
+		})
 	case *parser.DblBracketCmd:
-		return execDblBracket(state, c)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execDblBracket(state, c)
+		})
 	case *parser.SubshellCmd:
-		return execSubshell(state, c, stdin, stdout)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execSubshell(state, c, in, out)
+		})
 	case *parser.ArithCmd:
-		return execArithCmd(state, c)
+		return withRedirects(c.Redirects, stdin, stdout, func(in, out *os.File) int {
+			return execArithCmd(state, c)
+		})
 	case *parser.FuncDef:
 		state.funcs[c.Name] = c.Body
 		return 0
@@ -864,7 +903,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		}
 
 		fds := [3]*os.File{stdin, stdout, os.Stderr}
-		fds, opened, err := applyRedirects(cmd, fds)
+		fds, opened, err := applyRedirects(cmd.Redirects, fds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 			restoreVars(state, saved)
@@ -891,7 +930,7 @@ func execSimple(state *shellState, cmd *parser.SimpleCmd, stdin, stdout *os.File
 		}
 
 		fds := [3]*os.File{stdin, stdout, os.Stderr}
-		fds, opened, err := applyRedirects(cmd, fds)
+		fds, opened, err := applyRedirects(cmd.Redirects, fds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 			restoreVars(state, saved)
@@ -950,7 +989,7 @@ func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, st
 			return 0
 		}
 		fds := [3]*os.File{os.Stdin, os.Stdout, os.Stderr}
-		fds, _, err := applyRedirects(cmd, fds)
+		fds, _, err := applyRedirects(cmd.Redirects, fds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gosh: exec: %v\n", err)
 			return 1
@@ -984,7 +1023,7 @@ func execExec(state *shellState, cmd *parser.SimpleCmd, args []string, stdin, st
 
 	// Apply redirects.
 	fds := [3]*os.File{os.Stdin, os.Stdout, os.Stderr}
-	fds, _, redirErr := applyRedirects(cmd, fds)
+	fds, _, redirErr := applyRedirects(cmd.Redirects, fds)
 	if redirErr != nil {
 		fmt.Fprintf(os.Stderr, "gosh: exec: %v\n", redirErr)
 		return 1
@@ -1267,7 +1306,7 @@ func cloneShellState(state *shellState) *shellState {
 // applyRedirects processes a command's redirections, updating the
 // fd table (stdin=0, stdout=1, stderr=2). Returns the updated fds
 // and a list of opened files that must be closed after use.
-func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.File, error) {
+func applyRedirects(redirs []parser.Redirect, fds [3]*os.File) ([3]*os.File, []*os.File, error) {
 	var opened []*os.File
 
 	fail := func(err error) ([3]*os.File, []*os.File, error) {
@@ -1277,7 +1316,7 @@ func applyRedirects(cmd *parser.SimpleCmd, fds [3]*os.File) ([3]*os.File, []*os.
 		return fds, nil, err
 	}
 
-	for _, r := range cmd.Redirects {
+	for _, r := range redirs {
 		// Resolve the source fd: use explicit fd, or default
 		// based on redirect type.
 		fd := r.Fd
@@ -1372,7 +1411,7 @@ func startProcess(state *shellState, cmd *parser.SimpleCmd, fds [3]*os.File, pgi
 		return nil, nil
 	}
 
-	fds, opened, err := applyRedirects(cmd, fds)
+	fds, opened, err := applyRedirects(cmd.Redirects, fds)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gosh: %v\n", err)
 		return nil, nil

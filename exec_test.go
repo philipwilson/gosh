@@ -835,3 +835,61 @@ func TestWhileReadLineContinuation(t *testing.T) {
 	got := runCaptureWithStdin(t, s, `while read line; do echo "got $line"; done`, "hello\nworld\n")
 	assertOutput(t, got, "got hello\ngot world")
 }
+
+// --- Compound command redirects ---
+
+func TestWhileReadFromFile(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "input.txt")
+	os.WriteFile(tmp, []byte("a\nb\n"), 0644)
+	got := runCapture(t, s, `while read line; do echo "[$line]"; done < `+tmp)
+	assertOutput(t, got, "[a]\n[b]")
+}
+
+func TestForRedirectOut(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `for x in a b c; do echo $x; done > `+tmp+`; cat `+tmp)
+	assertOutput(t, got, "a\nb\nc")
+}
+
+func TestIfRedirectOut(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `if true; then echo yes; fi > `+tmp+`; cat `+tmp)
+	assertOutput(t, got, "yes")
+}
+
+func TestCaseRedirectOut(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `case foo in foo) echo matched;; esac > `+tmp+`; cat `+tmp)
+	assertOutput(t, got, "matched")
+}
+
+func TestSubshellRedirectOut(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `(echo hello) > `+tmp+`; cat `+tmp)
+	assertOutput(t, got, "hello")
+}
+
+func TestCompoundHerestring(t *testing.T) {
+	s := testState(t)
+	got := runCapture(t, s, `while read line; do echo "[$line]"; done <<< "hello world"`)
+	assertOutput(t, got, "[hello world]")
+}
+
+func TestUntilRedirectOut(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `X=0; until test $X -eq 3; do echo $X; X=$((X+1)); done > `+tmp+`; cat `+tmp)
+	assertOutput(t, got, "0\n1\n2")
+}
+
+func TestCompoundRedirInPipeline(t *testing.T) {
+	s := testState(t)
+	tmp := filepath.Join(t.TempDir(), "out.txt")
+	got := runCapture(t, s, `for x in c b a; do echo $x; done | sort > `+tmp+`; cat `+tmp)
+	assertOutput(t, got, "a\nb\nc")
+}

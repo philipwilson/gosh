@@ -47,31 +47,49 @@ func Expand(list *parser.List, lookup LookupFunc, subst SubstFunc, setVar SetFun
 	}
 }
 
+// expandRedirects performs tilde, arithmetic, command substitution, and
+// variable expansion on redirect filenames. No word splitting or globbing.
+func expandRedirects(redirs []parser.Redirect, lookup LookupFunc, subst SubstFunc, setVar SetFunc) {
+	for i := range redirs {
+		redirs[i].File = expandTilde(redirs[i].File, lookup)
+		redirs[i].File = expandArithInWord(redirs[i].File, lookup, setVar)
+		if subst != nil {
+			redirs[i].File = expandCmdSubstInWord(redirs[i].File, subst)
+		}
+		redirs[i].File = expandVarsInWord(redirs[i].File, lookup)
+	}
+}
+
 func expandPipeline(pipe *parser.Pipeline, lookup LookupFunc, subst SubstFunc, setVar SetFunc, lookupArray LookupArrayFunc) {
 	for _, cmd := range pipe.Cmds {
 		switch c := cmd.(type) {
 		case *parser.SimpleCmd:
 			expandCommand(c, lookup, subst, setVar, lookupArray)
 		case *parser.IfCmd:
-			// IfCmd branches are expanded lazily by the executor,
-			// so each branch is only expanded if it's actually taken.
+			// IfCmd branches are expanded lazily by the executor.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.WhileCmd:
-			// WhileCmd condition and body are expanded lazily on each
-			// iteration by the executor.
+			// WhileCmd condition and body are expanded lazily.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
+		case *parser.UntilCmd:
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.ForCmd:
-			// ForCmd words and body are expanded lazily by the executor.
+			// ForCmd words and body are expanded lazily.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.ArithForCmd:
-			// ArithForCmd expressions and body are expanded lazily by the executor.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.CaseCmd:
-			// CaseCmd word, patterns, and body are expanded lazily by the executor.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.FuncDef:
-			// FuncDef body is stored and expanded when the function is called.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
+		case *parser.SelectCmd:
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.DblBracketCmd:
-			// DblBracketCmd items are expanded at execution time.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.SubshellCmd:
-			// SubshellCmd body is expanded at execution time.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		case *parser.ArithCmd:
-			// ArithCmd expression is expanded at execution time.
+			expandRedirects(c.Redirects, lookup, subst, setVar)
 		default:
 			_ = c
 		}

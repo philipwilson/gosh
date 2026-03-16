@@ -196,7 +196,11 @@ func (p *parser) parseCommand() (Command, error) {
 	}
 	if tok.Type == lexer.TOKEN_ARITH_CMD {
 		p.next()
-		return &ArithCmd{Expr: tok.Val}, nil
+		redirs, err := p.parseTrailingRedirects()
+		if err != nil {
+			return nil, err
+		}
+		return &ArithCmd{Expr: tok.Val, Redirects: redirs}, nil
 	}
 	if tok.Type == lexer.TOKEN_LPAREN {
 		return p.parseSubshell()
@@ -217,7 +221,11 @@ func (p *parser) parseDblBracket() (*DblBracketCmd, error) {
 		}
 		if tok.Type == lexer.TOKEN_WORD && tok.Val == "]]" {
 			p.next() // consume ]]
-			return &DblBracketCmd{Items: items}, nil
+			redirs, err := p.parseTrailingRedirects()
+			if err != nil {
+				return nil, err
+			}
+			return &DblBracketCmd{Items: items, Redirects: redirs}, nil
 		}
 		p.next()
 		switch tok.Type {
@@ -255,7 +263,11 @@ func (p *parser) parseSubshell() (*SubshellCmd, error) {
 		return nil, fmt.Errorf("expected ')', got %s", p.peek())
 	}
 	p.next() // consume )
-	return &SubshellCmd{Body: body}, nil
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &SubshellCmd{Body: body, Redirects: redirs}, nil
 }
 
 // parseIf parses: 'if' list 'then' list ('elif' list 'then' list)* ('else' list)? 'fi'
@@ -313,6 +325,11 @@ func (p *parser) parseIf() (*IfCmd, error) {
 		return nil, fmt.Errorf("expected 'fi', got %s", p.peek())
 	}
 
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Redirects = redirs
 	return cmd, nil
 }
 
@@ -336,7 +353,11 @@ func (p *parser) parseWhile() (*WhileCmd, error) {
 		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
 	}
 
-	return &WhileCmd{Condition: cond, Body: body}, nil
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &WhileCmd{Condition: cond, Body: body, Redirects: redirs}, nil
 }
 
 // parseUntil parses: 'until' list 'do' list 'done'
@@ -359,7 +380,11 @@ func (p *parser) parseUntil() (*UntilCmd, error) {
 		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
 	}
 
-	return &UntilCmd{Condition: cond, Body: body}, nil
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &UntilCmd{Condition: cond, Body: body, Redirects: redirs}, nil
 }
 
 // parseFor parses: 'for' NAME 'in' word... (';' | EOF-before-do) 'do' list 'done'
@@ -417,7 +442,11 @@ func (p *parser) parseFor() (Command, error) {
 		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
 	}
 
-	return &ForCmd{VarName: varName, Words: words, Body: body}, nil
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &ForCmd{VarName: varName, Words: words, Body: body, Redirects: redirs}, nil
 }
 
 // parseSelect parses: 'select' NAME 'in' word... ';' 'do' list 'done'
@@ -467,7 +496,11 @@ func (p *parser) parseSelect() (*SelectCmd, error) {
 		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
 	}
 
-	return &SelectCmd{VarName: varName, Words: words, Body: body}, nil
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &SelectCmd{VarName: varName, Words: words, Body: body, Redirects: redirs}, nil
 }
 
 // parseArithFor parses: (( init; cond; step )) [;] do list done
@@ -497,11 +530,16 @@ func (p *parser) parseArithFor() (*ArithForCmd, error) {
 		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
 	}
 
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
 	return &ArithForCmd{
-		Init: parts[0],
-		Cond: parts[1],
-		Step: parts[2],
-		Body: body,
+		Init:      parts[0],
+		Cond:      parts[1],
+		Step:      parts[2],
+		Body:      body,
+		Redirects: redirs,
 	}, nil
 }
 
@@ -595,6 +633,11 @@ func (p *parser) parseCase() (*CaseCmd, error) {
 		return nil, fmt.Errorf("expected 'esac', got %s", p.peek())
 	}
 
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Redirects = redirs
 	return cmd, nil
 }
 
@@ -622,7 +665,11 @@ func (p *parser) parseFuncDef() (*FuncDef, error) {
 		return nil, fmt.Errorf("expected '}', got %s", p.peek())
 	}
 
-	return &FuncDef{Name: name, Body: body}, nil
+	redirs, err := p.parseTrailingRedirects()
+	if err != nil {
+		return nil, err
+	}
+	return &FuncDef{Name: name, Body: body, Redirects: redirs}, nil
 }
 
 // peekWord returns true if the next token is a WORD with the given value.
@@ -752,6 +799,72 @@ func (p *parser) parseSimpleCommand() (*SimpleCmd, error) {
 				return nil, fmt.Errorf("expected command, got %s", tok)
 			}
 			return cmd, nil
+		}
+	}
+}
+
+// parseTrailingRedirects consumes any redirect tokens that follow a
+// compound command's closing keyword (fi, done, esac, }, ]], )).
+func (p *parser) parseTrailingRedirects() ([]Redirect, error) {
+	var redirs []Redirect
+	for {
+		tok := p.peek()
+		switch tok.Type {
+		case lexer.TOKEN_LT:
+			r, err := p.parseRedirect(REDIR_IN)
+			if err != nil {
+				return nil, err
+			}
+			redirs = append(redirs, r)
+		case lexer.TOKEN_GT:
+			r, err := p.parseRedirect(REDIR_OUT)
+			if err != nil {
+				return nil, err
+			}
+			redirs = append(redirs, r)
+		case lexer.TOKEN_APPEND:
+			r, err := p.parseRedirect(REDIR_APPEND)
+			if err != nil {
+				return nil, err
+			}
+			redirs = append(redirs, r)
+		case lexer.TOKEN_HEREDOC:
+			rTok := p.next()
+			fd := rTok.Fd
+			if fd < 0 {
+				fd = 0
+			}
+			redirs = append(redirs, Redirect{
+				Fd:   fd,
+				Type: REDIR_HEREDOC,
+				File: rTok.Heredoc.Body,
+			})
+		case lexer.TOKEN_HERESTRING:
+			rTok := p.next()
+			fd := rTok.Fd
+			if fd < 0 {
+				fd = 0
+			}
+			wordTok := p.peek()
+			if wordTok.Type != lexer.TOKEN_WORD {
+				return nil, fmt.Errorf("expected word after <<<, got %s", wordTok)
+			}
+			p.next()
+			redirs = append(redirs, Redirect{
+				Fd:   fd,
+				Type: REDIR_HERESTRING,
+				File: wordTok.Parts,
+			})
+		case lexer.TOKEN_DUP:
+			rTok := p.next()
+			target := lexer.Word{{Text: rTok.Val, Quote: lexer.Unquoted}}
+			redirs = append(redirs, Redirect{
+				Fd:   rTok.Fd,
+				Type: REDIR_DUP,
+				File: target,
+			})
+		default:
+			return redirs, nil
 		}
 	}
 }

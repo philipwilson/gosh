@@ -231,16 +231,18 @@ func cloneCommand(c Command) Command {
 				Body:      CloneList(cl.Body),
 			}
 		}
-		return &IfCmd{Clauses: clauses, ElseBody: CloneList(c.ElseBody)}
+		return &IfCmd{Clauses: clauses, ElseBody: CloneList(c.ElseBody), Redirects: cloneRedirects(c.Redirects)}
 	case *WhileCmd:
 		return &WhileCmd{
 			Condition: CloneList(c.Condition),
 			Body:      CloneList(c.Body),
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *UntilCmd:
 		return &UntilCmd{
 			Condition: CloneList(c.Condition),
 			Body:      CloneList(c.Body),
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *ForCmd:
 		words := make([]lexer.Word, len(c.Words))
@@ -248,9 +250,10 @@ func cloneCommand(c Command) Command {
 			words[i] = CloneWord(w)
 		}
 		return &ForCmd{
-			VarName: c.VarName,
-			Words:   words,
-			Body:    CloneList(c.Body),
+			VarName:   c.VarName,
+			Words:     words,
+			Body:      CloneList(c.Body),
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *CaseCmd:
 		clauses := make([]CaseClause, len(c.Clauses))
@@ -265,13 +268,15 @@ func cloneCommand(c Command) Command {
 			}
 		}
 		return &CaseCmd{
-			Word:    CloneWord(c.Word),
-			Clauses: clauses,
+			Word:      CloneWord(c.Word),
+			Clauses:   clauses,
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *FuncDef:
 		return &FuncDef{
-			Name: c.Name,
-			Body: CloneList(c.Body),
+			Name:      c.Name,
+			Body:      CloneList(c.Body),
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *SelectCmd:
 		words := make([]lexer.Word, len(c.Words))
@@ -279,30 +284,43 @@ func cloneCommand(c Command) Command {
 			words[i] = CloneWord(w)
 		}
 		return &SelectCmd{
-			VarName: c.VarName,
-			Words:   words,
-			Body:    CloneList(c.Body),
+			VarName:   c.VarName,
+			Words:     words,
+			Body:      CloneList(c.Body),
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *ArithForCmd:
 		return &ArithForCmd{
-			Init: c.Init,
-			Cond: c.Cond,
-			Step: c.Step,
-			Body: CloneList(c.Body),
+			Init:      c.Init,
+			Cond:      c.Cond,
+			Step:      c.Step,
+			Body:      CloneList(c.Body),
+			Redirects: cloneRedirects(c.Redirects),
 		}
 	case *DblBracketCmd:
 		items := make([]lexer.Word, len(c.Items))
 		for i, w := range c.Items {
 			items[i] = CloneWord(w)
 		}
-		return &DblBracketCmd{Items: items}
+		return &DblBracketCmd{Items: items, Redirects: cloneRedirects(c.Redirects)}
 	case *SubshellCmd:
-		return &SubshellCmd{Body: CloneList(c.Body)}
+		return &SubshellCmd{Body: CloneList(c.Body), Redirects: cloneRedirects(c.Redirects)}
 	case *ArithCmd:
-		return &ArithCmd{Expr: c.Expr}
+		return &ArithCmd{Expr: c.Expr, Redirects: cloneRedirects(c.Redirects)}
 	default:
 		return c
 	}
+}
+
+func cloneRedirects(redirs []Redirect) []Redirect {
+	if len(redirs) == 0 {
+		return nil
+	}
+	out := make([]Redirect, len(redirs))
+	for i, r := range redirs {
+		out[i] = Redirect{Fd: r.Fd, Type: r.Type, File: CloneWord(r.File)}
+	}
+	return out
 }
 
 func cloneSimpleCmd(c *SimpleCmd) *SimpleCmd {
@@ -325,13 +343,7 @@ func cloneSimpleCmd(c *SimpleCmd) *SimpleCmd {
 	for _, w := range c.Args {
 		sc.Args = append(sc.Args, CloneWord(w))
 	}
-	for _, r := range c.Redirects {
-		sc.Redirects = append(sc.Redirects, Redirect{
-			Fd:   r.Fd,
-			Type: r.Type,
-			File: CloneWord(r.File),
-		})
-	}
+	sc.Redirects = cloneRedirects(c.Redirects)
 	return sc
 }
 
@@ -356,8 +368,9 @@ type IfClause struct {
 
 // IfCmd represents: if list; then list; [elif list; then list;]... [else list;] fi
 type IfCmd struct {
-	Clauses  []IfClause // if + zero or more elif
-	ElseBody *List      // nil if no else branch
+	Clauses   []IfClause // if + zero or more elif
+	ElseBody  *List      // nil if no else branch
+	Redirects []Redirect
 }
 
 // --- WhileCmd ---
@@ -366,6 +379,7 @@ type IfCmd struct {
 type WhileCmd struct {
 	Condition *List
 	Body      *List
+	Redirects []Redirect
 }
 
 func (c *WhileCmd) node()    {}
@@ -380,6 +394,7 @@ func (c *WhileCmd) String() string {
 type UntilCmd struct {
 	Condition *List
 	Body      *List
+	Redirects []Redirect
 }
 
 func (c *UntilCmd) node()    {}
@@ -392,9 +407,10 @@ func (c *UntilCmd) String() string {
 
 // ForCmd represents: for NAME in word...; do list; done
 type ForCmd struct {
-	VarName string       // loop variable name
-	Words   []lexer.Word // words to iterate over (expanded before iteration)
-	Body    *List
+	VarName   string       // loop variable name
+	Words     []lexer.Word // words to iterate over (expanded before iteration)
+	Body      *List
+	Redirects []Redirect
 }
 
 func (c *ForCmd) node()    {}
@@ -411,9 +427,10 @@ func (c *ForCmd) String() string {
 
 // SelectCmd represents: select NAME in word...; do list; done
 type SelectCmd struct {
-	VarName string       // the selection variable name
-	Words   []lexer.Word // words to display as menu items
-	Body    *List
+	VarName   string       // the selection variable name
+	Words     []lexer.Word // words to display as menu items
+	Body      *List
+	Redirects []Redirect
 }
 
 func (c *SelectCmd) node()    {}
@@ -430,10 +447,11 @@ func (c *SelectCmd) String() string {
 
 // ArithForCmd represents: for (( init; cond; step )) do list done
 type ArithForCmd struct {
-	Init string // initialization expression (may be empty)
-	Cond string // condition expression (may be empty — infinite loop)
-	Step string // step/update expression (may be empty)
-	Body *List
+	Init      string // initialization expression (may be empty)
+	Cond      string // condition expression (may be empty — infinite loop)
+	Step      string // step/update expression (may be empty)
+	Body      *List
+	Redirects []Redirect
 }
 
 func (c *ArithForCmd) node()    {}
@@ -452,8 +470,9 @@ type CaseClause struct {
 
 // CaseCmd represents: case word in (pattern) list ;; ... esac
 type CaseCmd struct {
-	Word    lexer.Word   // the word being matched
-	Clauses []CaseClause
+	Word      lexer.Word   // the word being matched
+	Clauses   []CaseClause
+	Redirects []Redirect
 }
 
 func (c *CaseCmd) node()    {}
@@ -474,8 +493,9 @@ func (c *CaseCmd) String() string {
 
 // FuncDef represents a function definition: fname() { list; }
 type FuncDef struct {
-	Name string
-	Body *List
+	Name      string
+	Body      *List
+	Redirects []Redirect
 }
 
 func (c *FuncDef) node()    {}
@@ -490,7 +510,8 @@ func (c *FuncDef) String() string {
 // Items are the expression tokens between [[ and ]], preserving quoting
 // for pattern matching on the RHS of == and !=.
 type DblBracketCmd struct {
-	Items []lexer.Word
+	Items     []lexer.Word
+	Redirects []Redirect
 }
 
 func (c *DblBracketCmd) node()    {}
@@ -508,7 +529,8 @@ func (c *DblBracketCmd) String() string {
 // SubshellCmd represents: ( list ) — runs commands in a subshell.
 // Variable changes inside the subshell do not affect the parent.
 type SubshellCmd struct {
-	Body *List
+	Body      *List
+	Redirects []Redirect
 }
 
 func (c *SubshellCmd) node()    {}
@@ -522,7 +544,8 @@ func (c *SubshellCmd) String() string {
 // ArithCmd represents: (( expr )) — an arithmetic command.
 // Returns 0 (true) if expr evaluates to non-zero, 1 (false) if zero.
 type ArithCmd struct {
-	Expr string // the arithmetic expression text
+	Expr      string // the arithmetic expression text
+	Redirects []Redirect
 }
 
 func (c *ArithCmd) node()    {}

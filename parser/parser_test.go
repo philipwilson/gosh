@@ -810,3 +810,30 @@ func TestArithCmdParse(t *testing.T) {
 		t.Errorf("expected expr %q, got %q", "x + 1", ac.Expr)
 	}
 }
+
+func TestArithFor(t *testing.T) {
+	tokens, err := lexer.Lex("for ((i=0; i<5; i++)); do echo $i; done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := Parse(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(list.Entries))
+	}
+	af, ok := list.Entries[0].Pipeline.Cmds[0].(*ArithForCmd)
+	if !ok {
+		t.Fatalf("expected ArithForCmd, got %T", list.Entries[0].Pipeline.Cmds[0])
+	}
+	if af.Init != "i=0" {
+		t.Errorf("expected init %q, got %q", "i=0", af.Init)
+	}
+	if af.Cond != "i<5" {
+		t.Errorf("expected cond %q, got %q", "i<5", af.Cond)
+	}
+	if af.Step != "i++" {
+		t.Errorf("expected step %q, got %q", "i++", af.Step)
+	}
+}

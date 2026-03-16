@@ -42,6 +42,7 @@ var builtins = map[string]builtinFunc{
 	"local":           builtinLocal,
 	"alias":           builtinAlias,
 	"unalias":         builtinUnalias,
+	"printf":          builtinPrintf,
 	"debug-tokens":    builtinDebugTokens,
 	"debug-ast":       builtinDebugAST,
 	"debug-expanded":  builtinDebugExpanded,
@@ -466,6 +467,186 @@ func splitByIFS(line, ifs string, maxFields int) []string {
 
 func builtinTrue(state *shellState, args []string, stdin, stdout *os.File) int  { return 0 }
 func builtinFalse(state *shellState, args []string, stdin, stdout *os.File) int { return 1 }
+
+// builtinPrintf implements the printf builtin.
+// printf FORMAT [ARGUMENTS...]
+// Supports: %s (string), %d (decimal), %x (hex), %o (octal), %c (char), %% (literal %)
+// Format escape sequences: \n, \t, \\, \", \', \a, \b, \f, \r, \v, \0NNN (octal), \xHH (hex)
+// If more arguments than format specifiers, format is reused.
+func builtinPrintf(state *shellState, args []string, stdin, stdout *os.File) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "gosh: printf: usage: printf format [arguments]")
+		return 1
+	}
+	format := args[0]
+	fmtArgs := args[1:]
+
+	argIdx := 0
+	getArg := func() string {
+		if argIdx < len(fmtArgs) {
+			s := fmtArgs[argIdx]
+			argIdx++
+			return s
+		}
+		argIdx++
+		return ""
+	}
+
+	// Process format string, reusing it if there are remaining arguments.
+	for {
+		startArgIdx := argIdx
+		s := printfExpand(format, getArg)
+		fmt.Fprint(stdout, s)
+
+		// If no arguments were consumed or all arguments are used up, stop.
+		if argIdx == startArgIdx || argIdx >= len(fmtArgs) {
+			break
+		}
+	}
+	return 0
+}
+
+// printfExpand processes a printf format string, calling getArg for each
+// format specifier to get the next argument.
+func printfExpand(format string, getArg func() string) string {
+	runes := []rune(format)
+	var out strings.Builder
+	i := 0
+
+	for i < len(runes) {
+		ch := runes[i]
+
+		if ch == '\\' {
+			i++
+			if i >= len(runes) {
+				out.WriteRune('\\')
+				break
+			}
+			esc := runes[i]
+			i++
+			switch esc {
+			case 'n':
+				out.WriteRune('\n')
+			case 't':
+				out.WriteRune('\t')
+			case '\\':
+				out.WriteRune('\\')
+			case '"':
+				out.WriteRune('"')
+			case '\'':
+				out.WriteRune('\'')
+			case 'a':
+				out.WriteRune('\a')
+			case 'b':
+				out.WriteRune('\b')
+			case 'f':
+				out.WriteRune('\f')
+			case 'r':
+				out.WriteRune('\r')
+			case 'v':
+				out.WriteRune('\v')
+			case '0':
+				// Octal escape \0NNN (up to 3 octal digits).
+				val := 0
+				for j := 0; j < 3 && i < len(runes) && runes[i] >= '0' && runes[i] <= '7'; j++ {
+					val = val*8 + int(runes[i]-'0')
+					i++
+				}
+				out.WriteRune(rune(val))
+			case 'x':
+				// Hex escape \xHH (up to 2 hex digits).
+				val := 0
+				for j := 0; j < 2 && i < len(runes); j++ {
+					d := hexDigit(runes[i])
+					if d < 0 {
+						break
+					}
+					val = val*16 + d
+					i++
+				}
+				out.WriteRune(rune(val))
+			default:
+				out.WriteRune('\\')
+				out.WriteRune(esc)
+			}
+			continue
+		}
+
+		if ch == '%' {
+			i++
+			if i >= len(runes) {
+				out.WriteRune('%')
+				break
+			}
+			spec := runes[i]
+			i++
+
+			// Collect optional flags and width between % and the specifier.
+			// For simplicity, we handle basic flags: -, 0, and width digits.
+			flagStart := i - 1
+			for spec == '-' || spec == '0' || (spec >= '1' && spec <= '9') {
+				if i >= len(runes) {
+					out.WriteString(string(runes[flagStart-1:]))
+					return out.String()
+				}
+				spec = runes[i]
+				i++
+			}
+
+			switch spec {
+			case '%':
+				out.WriteRune('%')
+			case 's':
+				arg := getArg()
+				out.WriteString(arg)
+			case 'd':
+				arg := getArg()
+				n, _ := strconv.Atoi(arg)
+				out.WriteString(strconv.Itoa(n))
+			case 'x':
+				arg := getArg()
+				n, _ := strconv.Atoi(arg)
+				out.WriteString(fmt.Sprintf("%x", n))
+			case 'X':
+				arg := getArg()
+				n, _ := strconv.Atoi(arg)
+				out.WriteString(fmt.Sprintf("%X", n))
+			case 'o':
+				arg := getArg()
+				n, _ := strconv.Atoi(arg)
+				out.WriteString(fmt.Sprintf("%o", n))
+			case 'c':
+				arg := getArg()
+				if len(arg) > 0 {
+					out.WriteByte(arg[0])
+				}
+			default:
+				out.WriteRune('%')
+				out.WriteRune(spec)
+			}
+			continue
+		}
+
+		out.WriteRune(ch)
+		i++
+	}
+
+	return out.String()
+}
+
+// hexDigit returns the value of a hex digit, or -1 if not a hex digit.
+func hexDigit(ch rune) int {
+	switch {
+	case ch >= '0' && ch <= '9':
+		return int(ch - '0')
+	case ch >= 'a' && ch <= 'f':
+		return int(ch-'a') + 10
+	case ch >= 'A' && ch <= 'F':
+		return int(ch-'A') + 10
+	default:
+		return -1
+	}
+}
 
 // builtinDebugTokens toggles printing of the token stream before parsing.
 func builtinDebugTokens(state *shellState, args []string, stdin, stdout *os.File) int {

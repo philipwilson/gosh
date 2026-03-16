@@ -251,6 +251,13 @@ func cloneCommand(c Command) Command {
 			Name: c.Name,
 			Body: CloneList(c.Body),
 		}
+	case *ArithForCmd:
+		return &ArithForCmd{
+			Init: c.Init,
+			Cond: c.Cond,
+			Step: c.Step,
+			Body: CloneList(c.Body),
+		}
 	case *DblBracketCmd:
 		items := make([]lexer.Word, len(c.Items))
 		for i, w := range c.Items {
@@ -343,6 +350,22 @@ func (c *ForCmd) String() string {
 		words = append(words, w.String())
 	}
 	return "For[" + c.VarName + " in " + strings.Join(words, " ") + " body=" + c.Body.String() + "]"
+}
+
+// --- ArithForCmd ---
+
+// ArithForCmd represents: for (( init; cond; step )) do list done
+type ArithForCmd struct {
+	Init string // initialization expression (may be empty)
+	Cond string // condition expression (may be empty — infinite loop)
+	Step string // step/update expression (may be empty)
+	Body *List
+}
+
+func (c *ArithForCmd) node()    {}
+func (c *ArithForCmd) command() {}
+func (c *ArithForCmd) String() string {
+	return "ArithFor[init=" + c.Init + " cond=" + c.Cond + " step=" + c.Step + " body=" + c.Body.String() + "]"
 }
 
 // --- CaseCmd ---

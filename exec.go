@@ -266,6 +266,8 @@ func execCommand(state *shellState, cmd parser.Command, stdin, stdout *os.File) 
 		return execWhile(state, c, stdin, stdout)
 	case *parser.ForCmd:
 		return execFor(state, c, stdin, stdout)
+	case *parser.ArithForCmd:
+		return execArithFor(state, c, stdin, stdout)
 	case *parser.CaseCmd:
 		return execCase(state, c, stdin, stdout)
 	case *parser.DblBracketCmd:
@@ -443,6 +445,64 @@ func execFor(state *shellState, cmd *parser.ForCmd, stdin, stdout *os.File) int 
 		}
 		if state.continueFlag {
 			state.continueFlag = false
+		}
+	}
+
+	return state.lastStatus
+}
+
+// execArithFor evaluates a for (( init; cond; step )) do body done loop.
+func execArithFor(state *shellState, cmd *parser.ArithForCmd, stdin, stdout *os.File) int {
+	lookup := func(name string) string { return state.lookup(name) }
+	setVar := func(name, value string) { state.vars[name] = value }
+
+	// Evaluate init expression.
+	if cmd.Init != "" {
+		initExpr := expander.ExpandDollar(cmd.Init, lookup)
+		if _, err := expander.EvalArith(initExpr, lookup, setVar); err != nil {
+			fmt.Fprintf(os.Stderr, "gosh: for((%s)): %s\n", cmd.Init, err)
+			return 1
+		}
+	}
+
+	state.loopDepth++
+	defer func() { state.loopDepth-- }()
+
+	for {
+		// Evaluate condition (empty condition = infinite loop).
+		if cmd.Cond != "" {
+			condExpr := expander.ExpandDollar(cmd.Cond, lookup)
+			val, err := expander.EvalArith(condExpr, lookup, setVar)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gosh: for((%s)): %s\n", cmd.Cond, err)
+				return 1
+			}
+			if val == 0 {
+				break
+			}
+		}
+
+		// Execute body.
+		body := parser.CloneList(cmd.Body)
+		execList(state, body, stdin, stdout)
+
+		if state.exitFlag || state.returnFlag || state.breakFlag {
+			if state.breakFlag {
+				state.breakFlag = false
+			}
+			return state.lastStatus
+		}
+		if state.continueFlag {
+			state.continueFlag = false
+		}
+
+		// Evaluate step expression.
+		if cmd.Step != "" {
+			stepExpr := expander.ExpandDollar(cmd.Step, lookup)
+			if _, err := expander.EvalArith(stepExpr, lookup, setVar); err != nil {
+				fmt.Fprintf(os.Stderr, "gosh: for((%s)): %s\n", cmd.Step, err)
+				return 1
+			}
 		}
 	}
 

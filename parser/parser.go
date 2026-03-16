@@ -332,8 +332,13 @@ func (p *parser) parseWhile() (*WhileCmd, error) {
 }
 
 // parseFor parses: 'for' NAME 'in' word... (';' | EOF-before-do) 'do' list 'done'
-func (p *parser) parseFor() (*ForCmd, error) {
+func (p *parser) parseFor() (Command, error) {
 	p.next() // consume "for"
+
+	// Check for arithmetic for: for (( init; cond; step ))
+	if p.peek().Type == lexer.TOKEN_ARITH_CMD {
+		return p.parseArithFor()
+	}
 
 	// Expect variable name.
 	tok := p.peek()
@@ -382,6 +387,57 @@ func (p *parser) parseFor() (*ForCmd, error) {
 	}
 
 	return &ForCmd{VarName: varName, Words: words, Body: body}, nil
+}
+
+// parseArithFor parses: (( init; cond; step )) [;] do list done
+// Called after "for" has been consumed; TOKEN_ARITH_CMD is current.
+func (p *parser) parseArithFor() (*ArithForCmd, error) {
+	tok := p.next() // consume TOKEN_ARITH_CMD
+	expr := tok.Val
+
+	// Split expression on semicolons into init, cond, step.
+	parts := splitArithForExpr(expr)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("expected 3 expressions in for((...)), got %d", len(parts))
+	}
+
+	// Skip optional semicolons before 'do'.
+	p.skipSemis()
+
+	if !p.expectWord("do") {
+		return nil, fmt.Errorf("expected 'do' after for((...)), got %s", p.peek())
+	}
+
+	body, err := p.parseList("done")
+	if err != nil {
+		return nil, err
+	}
+	if !p.expectWord("done") {
+		return nil, fmt.Errorf("expected 'done', got %s", p.peek())
+	}
+
+	return &ArithForCmd{
+		Init: parts[0],
+		Cond: parts[1],
+		Step: parts[2],
+		Body: body,
+	}, nil
+}
+
+// splitArithForExpr splits "init; cond; step" into three parts.
+func splitArithForExpr(expr string) []string {
+	var parts []string
+	var current strings.Builder
+	for _, ch := range expr {
+		if ch == ';' {
+			parts = append(parts, strings.TrimSpace(current.String()))
+			current.Reset()
+		} else {
+			current.WriteRune(ch)
+		}
+	}
+	parts = append(parts, strings.TrimSpace(current.String()))
+	return parts
 }
 
 // parseCase parses: 'case' word 'in' (pattern ('|' pattern)* ')' list ';;')* 'esac'
